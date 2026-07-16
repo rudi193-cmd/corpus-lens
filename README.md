@@ -92,6 +92,13 @@ The battery (v0): `steering_density`, `thread_shape`, `composition_mix`,
 reported (never hidden), and reference points from one measured N=1 operator
 corpus plus WildChat/OASST population aggregates.
 
+See [`examples/EXAMPLE.md`](examples/EXAMPLE.md) for a complete annotated run on
+a small synthetic corpus you can reproduce byte-for-byte:
+
+```bash
+corpuslens run examples/sample-corpus --adapter claude-code
+```
+
 ## Tests
 
 ```bash

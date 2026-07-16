@@ -1,0 +1,8 @@
+{"type":"user","timestamp":"2026-03-02T14:00:00Z","message":{"content":[{"type":"text","text":"lets talk about options for the dashboard cache layer before we build anything, what are the tradeoffs"}]}}
+{"type":"assistant","timestamp":"2026-03-02T14:05:00Z","message":{"content":[{"type":"text","text":"Three options, with tradeoffs: in-memory is fastest but lost on restart; sqlite survives restarts but adds a dependency; a file cache is simplest. On the other hand, the read pattern here is bursty, which favors in-memory. Here is the case for each..."}]}}
+{"type":"user","timestamp":"2026-03-02T14:15:00Z","message":{"content":[{"type":"text","text":"go with sqlite, survives restart matters more than raw speed here"}]}}
+{"type":"assistant","timestamp":"2026-03-02T14:30:00Z","message":{"content":[{"type":"text","text":"Wired the sqlite cache."}]}}
+{"type":"user","timestamp":"2026-03-05T11:00:00Z","message":{"content":[{"type":"text","text":"picking the dashboard back up. the cache is evicting too aggressively, look at the ttl logic"}]}}
+{"type":"assistant","timestamp":"2026-03-05T11:10:00Z","message":{"content":[{"type":"text","text":"The ttl was in seconds but compared against milliseconds. Fixed."}]}}
+{"type":"user","timestamp":"2026-03-05T11:20:00Z","message":{"content":[{"type":"text","text":"good. add a metric for cache hit rate and expose it on the status page"}]}}
+{"type":"assistant","timestamp":"2026-03-05T11:35:00Z","message":{"content":[{"type":"text","text":"Added hit-rate metric to the status endpoint."}]}}
