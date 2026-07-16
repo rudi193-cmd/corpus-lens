@@ -145,4 +145,15 @@ Lineage: consolidates the ad-hoc instruments of the willow personal-research
 sessions (2026-07) into the architecture planned there; the inference wall is
 the `learner-model-ground-rules` made mechanical.
 
+## Contributing & security
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — the load-bearing rules (never overclaim;
+  the wall discipline for new adapters/analyzers; classifiers undercount, never
+  over) and how to run the tests.
+- [SECURITY.md](SECURITY.md) — what counts as a wall breach (and what is a
+  disclosed limit, by design), and how to report privately.
+- [CHANGELOG.md](CHANGELOG.md) — dated, in-the-open amendments.
+
+CI runs the suite on Python 3.10–3.13 plus a packaging smoke test on every push.
+
 Apache-2.0 · ΔΣ = 42
