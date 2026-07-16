@@ -59,17 +59,50 @@ re-supplying, through the Guard, the anchor you alone hold. What the wall does
 that asserts a plugin *cannot* recover the absolute anchor via the supported
 path, and one that documents that weekly cadence *is* reconstructable.
 
+## Install
+
+Python 3.10+, no dependencies. Not on PyPI yet — install from source:
+
+```bash
+git clone https://github.com/rudi193-cmd/corpus-lens
+cd corpus-lens
+pip install .           # or: pip install -e .  (for development)
+```
+
+This installs a `corpuslens` console command. You can also run it without
+installing, straight from a clone, via `python3 -m corpuslens`.
+
 ## Quickstart
 
 ```bash
-python3 -m corpuslens run ~/.claude/projects --adapter claude-code --out report.md
-python3 -m corpuslens run ./my-cursor-sessions --adapter cursor
+corpuslens run ~/.claude/projects --adapter claude-code --out report.md
+corpuslens run ./my-cursor-sessions --adapter cursor
+# equivalently, from a clone without installing:
+python3 -m corpuslens run ~/.claude/projects --adapter claude-code
 ```
+
+Point `--adapter claude-code` at a directory of Claude Code session `.jsonl`
+files, or `--adapter cursor` at a directory of Cursor session `.jsonl` files.
+The report prints to stdout (or `--out FILE`), and always opens with a
+plain-language audit line naming exactly what left the wall and how many input
+lines were dropped.
 
 The battery (v0): `steering_density`, `thread_shape`, `composition_mix`,
 `clarification_pull` — each with a named denominator, dropped-event counts
 reported (never hidden), and reference points from one measured N=1 operator
 corpus plus WildChat/OASST population aggregates.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests
+```
+
+The suite covers the wall (fail-closed release, cross-midnight censoring, the
+supported-path anchor-recovery attempt, the granted-profile audit sentence),
+the adapters (drop-count accounting, malformed-line and unreadable-file
+isolation, BOM, out-of-range dates, timezone reproducibility), and a
+regression test for every fixed review finding.
 
 ## Honesty about the numbers
 
