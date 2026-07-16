@@ -98,6 +98,35 @@ class HonestBoundaryTests(unittest.TestCase):
         self.assertFalse(hasattr(ct, "weekday"))
         self.assertFalse(hasattr(ct, "date"))
 
+    def test_delta_accumulation_cannot_pin_clock_hour(self):
+        """The attack a cold review found: accumulate delta_prev_s within a
+        thread, find the day_offset increment (a real midnight), and pin the
+        clock hour. Defense: the cross-day delta is censored (None), so the
+        midnight boundary carries no measurable offset. Assert no delta spans
+        two different days in a built corpus."""
+        import json, tempfile
+        from pathlib import Path
+        from corpuslens import ingest
+        d = tempfile.TemporaryDirectory()
+        # a thread crossing midnight: 23:59:00 then 00:00:30 next day
+        lines = [
+            {"type": "user", "timestamp": "2026-02-01T23:59:00Z",
+             "message": {"content": [{"type": "text", "text": "last turn before midnight here"}]}},
+            {"type": "user", "timestamp": "2026-02-02T00:00:30Z",
+             "message": {"content": [{"type": "text", "text": "first turn after midnight here"}]}},
+            {"type": "user", "timestamp": "2026-02-02T00:02:00Z",
+             "message": {"content": [{"type": "text", "text": "second turn after midnight here"}]}},
+        ]
+        (Path(d.name) / "s.jsonl").write_text("\n".join(json.dumps(x) for x in lines))
+        events, q, _ = ingest.get("claude-code")(d.name)
+        events.sort(key=lambda e: e.time.day_offset)
+        # the event that opens day 1 must have NO delta (cross-midnight censored)
+        day1_open = next(e for e in events if e.time.day_offset == 1)
+        self.assertIsNone(day1_open.time.delta_prev_s)
+        # within-day tempo still present (the 90s same-day gap)
+        self.assertTrue(any(e.time.delta_prev_s == 90.0 for e in events))
+        d.cleanup()
+
     def test_weekly_cadence_IS_reconstructable_documented_not_hidden(self):
         """The README promises weekly cadence is NOT hidden. This test documents
         that on purpose — if someone 'fixes' it away, this fails and forces them

@@ -6,10 +6,19 @@ Provenance rule (non-negotiable, earned the hard way): dates come from the
 `timestamp` LOG FIELD only — never from date-strings inside content. Content
 dates once inflated a resumption count 10x.
 
-Every line that fails to become an Event is COUNTED (`dropped`) and surfaced in
-the audit sentence — nothing is silently discarded (review fix). Filenames are
-hashed to opaque ids before they reach an Event, because export tools embed
-dates and names in filenames.
+Robustness rules (every one earned in review):
+  * Every line that fails to become an Event is COUNTED (`dropped`) and
+    surfaced in the audit sentence — nothing silently discarded.
+  * A single malformed line or an unreadable file NEVER aborts the scan; it
+    degrades to a counted drop and the run continues.
+  * Filenames are hashed to opaque ids before reaching an Event, and the
+    session key is the path RELATIVE TO THE ROOT (not the bare stem), so two
+    same-named files in different directories stay distinct threads.
+  * `delta_prev_s` is censored (None) whenever the previous event was on a
+    different day — a cross-midnight delta would let an analyzer pin the clock
+    hour, which the wall forbids. Within-day tempo survives.
+  * Naive timestamps (no offset) are read as UTC explicitly, so the same
+    corpus yields identical deltas on any machine (never the host timezone).
 """
 from __future__ import annotations
 
@@ -25,40 +34,47 @@ from .injection import authored_text
 
 ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T")
 
-# CODE_REF: require CODE-ADJACENT context, not bare English words. The old
-# pattern fired on "the company returns to profitability", "an Error in
-# judgment", etc. Now every alternative needs a code shape: a call, a dotted
-# call, a fence/backtick, a .py/type-annotation, a traceback line, or a
-# keyword in a code-ish neighbourhood (followed by a symbol, not prose).
+# CODE_REF: require CODE-ADJACENT context, not bare English words. Every
+# alternative needs a code shape (a call, a dotted call, a fence, a source
+# file, a traceback frame, a CamelCase Error/Exception, a real def/import).
+# Case-sensitive on the keyword/Error branches so prose "exception"/"error"
+# does not match.
 CODE_REF = re.compile(
-    r"\b\w+\([^)]*\)"                       # a call: foo(...)
-    r"|\b\w+\.\w+\("                         # a method call: obj.method(
-    r"|`[^`]+`|```"                          # inline or fenced code
-    r"|\.py\b|\.js\b|\.ts\b|\.rs\b|\.go\b"  # source file extensions
-    r"|\bline\s+\d+\b"                       # "line 40"
+    r"\b[A-Za-z_]\w*\([^)]*\)"                 # a call: foo(...)
+    r"|\b[A-Za-z_]\w*\.[A-Za-z_]\w*\("          # method call: obj.method(
+    r"|`[^`]+`|```"                              # inline / fenced code
+    r"|\b\w+\.(py|js|ts|rs|go|rb|java|sql|sh)\b"  # source file
     r"|Traceback \(most recent call last\)"
-    r"|\b\w+Error\b|\bException\b"           # ValueError, KeyError, Exception
-    r"|->|::|=>|\bself\.|\breturn\s+\w+\("   # code operators / return a call
-    r"|\b(def|class|async def)\s+\w+\s*\("   # a real def/class WITH a param list
-    r"|\bimport\s+\w+(\.\w+|\s+as\s+\w)"     # import a.b / import x as y (not "import goods")
-    r"|\bfrom\s+[\w.]+\s+import\b",          # from x import y
-    re.I,
+    r"|\bline\s+\d+,\s+in\b"                     # python traceback frame
+    r"|\b\w+(Error|Exception)\b"                # ValueError, KeyError (needs prefix)
+    r"|\breturn\s+\w+\("                         # return a call
+    r"|\b(def|class|async def)\s+\w+\s*\("     # def/class with a param list
+    r"|\bfrom\s+[\w.]+\s+import\b"              # from x import y
+    r"|\bimport\s+[a-z]\w*\.\w",                # import a.b (dotted module)
 )
-# AUTHORED: pasted code. Fenced code, OR an indented keyword line, OR a bare
-# assignment/def/return/import at low indent (unfenced paste is common in chat).
+# AUTHORED: pasted code. Fenced, real def/class/decl lines, control flow ending
+# in a colon, imports, a code-shaped assignment (RHS is a bracket/quote/call —
+# NOT a bare number+unit), SQL, or a few language tells. Case-sensitive so
+# prose "If you're ready:" (capital I) and "Select from the menu" don't match.
 AUTHORED = re.compile(
     r"```"
-    r"|^\s{2,}(def|class|for|if|elif|else|return|import|from|while|try|with)\b"
-    r"|^\s*(def|class|import|from|async def)\s+\w"
-    r"|^\s*[A-Za-z_]\w*\s*=\s*\S"           # x = something at line start
-    r"|=>\s*\{|\bconsole\.log\(|\bprintln!\(",
+    r"|^\s*(def|class|async\s+def)\s+\w+\s*\("
+    r"|^\s*(for|while|if|elif|with|try|except)\b[^\n]*[):]\s*$"
+    r"|^\s*(public|private|protected|static|func|fn|const|let|var)\s+\w"
+    r"|^\s*(import\s+[\w.]+|from\s+[\w.]+\s+import)\b"
+    r"|^\s*[A-Za-z_]\w*\s*=\s*([\[{('\"]|[A-Za-z_]\w*\()"
+    r"|^\s*[A-Za-z_]\w*\([^)]*\)\s*$"           # a line that is just a call: print(x)
+    r"|\b(SELECT|INSERT|UPDATE|DELETE)\b[^\n]*\b(FROM|INTO|SET|WHERE|VALUES)\b"
+    r"|console\.log\(|println!\(|System\.out\.",
     re.M,
 )
 DELIB = re.compile(
     r"\btalk (to me )?about\b|let'?s (talk|discuss|explore)|\bdiscuss\b|pros?\s*(and|/|\-)\s*cons?"
-    r"|trade.?offs?|think (through|about)\b|what do you think|\bthoughts\b"
-    r"|help me (think|understand|decide|figure|weigh)|walk me through|\boptions\b|brainstorm"
-    r"|i'?m (thinking|wondering|considering)|convince me|push back", re.I)
+    r"|trade.?offs?|think (through|about)\b|what do you think"
+    r"|\byour thoughts\b|\bany thoughts\b|thoughts on\b|thoughts\?"
+    r"|help me (think|understand|decide|figure|weigh)|walk me through"
+    r"|weigh (the |our |my )?options\b|what (are|were) (the |my |our )?options|\b(the|my|our) options\b"
+    r"|brainstorm|i'?m (thinking|wondering|considering)|convince me|push back", re.I)
 CLARIFY = re.compile(
     r"do you (mean|want)|would you like|should i\b|which (one|of|do|would|approach)"
     r"|to clarify|can you confirm|just to confirm|one question|quick question", re.I)
@@ -88,51 +104,64 @@ def _parse_ts(ts):
     d = datetime.date(int(ts[:4]), int(ts[5:7]), int(ts[8:10]))
     epoch = None
     try:
-        epoch = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:                       # naive -> read as UTC, not host tz
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        epoch = dt.timestamp()
     except Exception:
         pass
     return d, epoch
 
 
-@register("claude-code")
-def ingest(path: str, corpus_id: str = "corpus"):
-    root = Path(path)
-    # raw: (date, epoch|None, session_stem, role, text, real_ref)
-    raw = []
-    dropped = 0
-    for f in sorted(root.rglob("*.jsonl")):
-        session = f.stem
-        with f.open(encoding="utf-8-sig", errors="replace") as fh:   # utf-8-sig: BOM-safe
+def _iter_lines(f: Path):
+    """Yield (line_index, parsed_or_None). An unreadable file yields one
+    sentinel so the caller can count it as a drop and move on — never crash."""
+    try:
+        with f.open(encoding="utf-8-sig", errors="replace") as fh:
             for i, ln in enumerate(fh):
                 if not ln.strip():
                     continue
                 try:
-                    o = json.loads(ln)
+                    yield i, json.loads(ln)
                 except Exception:
-                    dropped += 1
-                    continue
-                if not isinstance(o, dict) or o.get("type") not in ("user", "assistant"):
-                    dropped += 1                 # count non-dict / system / tool lines
-                    continue
-                d, epoch = _parse_ts(o.get("timestamp"))
-                if d is None:
-                    dropped += 1
-                    continue
-                msg = o.get("message") or {}
-                content = msg.get("content")
-                if isinstance(content, list):
-                    text = " ".join(b.get("text") or "" for b in content
-                                    if isinstance(b, dict) and b.get("type") == "text")
-                else:
-                    text = content if isinstance(content, str) else ""
-                raw.append((d, epoch, session, o["type"], text, f"{f.name}:{i+1}"))
+                    yield i, None
+    except OSError:
+        yield -1, None
+
+
+@register("claude-code")
+def ingest(path: str, corpus_id: str = "corpus"):
+    root = Path(path)
+    raw = []          # (date, epoch|None, session_key, role, text, real_ref)
+    dropped = 0
+    for f in sorted(root.rglob("*.jsonl")):
+        rel = f.relative_to(root).as_posix()
+        for i, o in _iter_lines(f):
+            if not isinstance(o, dict):
+                dropped += 1
+                continue
+            if o.get("type") not in ("user", "assistant"):
+                dropped += 1
+                continue
+            d, epoch = _parse_ts(o.get("timestamp"))
+            if d is None:
+                dropped += 1
+                continue
+            msg = o.get("message")
+            if not isinstance(msg, dict):
+                msg = {}
+            content = msg.get("content")
+            if isinstance(content, list):
+                text = " ".join(b.get("text") or "" for b in content
+                                if isinstance(b, dict) and b.get("type") == "text")
+            else:
+                text = content if isinstance(content, str) else ""
+            raw.append((d, epoch, rel, o["type"], text, f"{rel}:{i+1}"))
 
     if not raw:
         return [], Quarantine(), dropped
 
-    base = min(r[0] for r in raw)                      # calendar anchor — quarantined
-    # Sort per session CHRONOLOGICALLY before deltas/openers (log JSONL can be
-    # non-monotonic across resume/branch). Undated epochs sort last, by line.
+    base = min(r[0] for r in raw)
     by_session: dict = {}
     for rec in raw:
         by_session.setdefault(rec[2], []).append(rec)
@@ -144,7 +173,9 @@ def ingest(path: str, corpus_id: str = "corpus"):
     for session, recs in by_session.items():
         sid = _hash(corpus_id, session)
         prev_epoch = None
+        prev_day = None
         for d, epoch, _, role, text, real_ref in recs:
+            day_offset = (d - base).days
             if role == "user":
                 text, stripped = authored_text(text)
                 author, dtype = AuthorClass.OPERATOR, DataType.PROMPT
@@ -152,20 +183,21 @@ def ingest(path: str, corpus_id: str = "corpus"):
                 author, dtype, stripped = AuthorClass.MACHINE, DataType.RESPONSE, False
             if not text.strip():
                 dropped += 1
-                # empty turn still advances the chronological clock so the NEXT
-                # delta is not silently bridged across it
-                if epoch is not None:
-                    prev_epoch = epoch
+                if epoch is not None:               # keep the clock advancing
+                    prev_epoch, prev_day = epoch, day_offset
                 continue
-            delta = (epoch - prev_epoch) if (epoch is not None and prev_epoch is not None) else None
+            # censor cross-day deltas: a midnight-crossing gap would pin the hour
+            same_day = (prev_day == day_offset)
+            delta = (epoch - prev_epoch) if (epoch is not None and prev_epoch is not None
+                                             and same_day) else None
             if epoch is not None:
-                prev_epoch = epoch
+                prev_epoch, prev_day = epoch, day_offset
             opaque = _hash(sid, real_ref)
             ref_map[opaque] = real_ref
             events.append(Event(
                 event_id=opaque, corpus_id=corpus_id, adapter_id="claude-code/1",
                 source_ref=opaque, thread_id=sid, surface=Surface.CLI,
                 author_class=author, data_type=dtype,
-                time=CoarseTime(day_offset=(d - base).days, delta_prev_s=delta),
+                time=CoarseTime(day_offset=day_offset, delta_prev_s=delta),
                 features=_features(text, stripped)))
     return events, Quarantine(base_date_iso=base.isoformat(), ref_map=ref_map), dropped

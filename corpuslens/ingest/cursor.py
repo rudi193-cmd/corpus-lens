@@ -3,23 +3,24 @@
 query in `<user_query>`). Dates come from the injected tag at BLOCK START
 only — a content-quoted tag mid-text does not count.
 
-CONSERVATIVE BY CONSTRUCTION: only user turns whose text block starts with a
-recognizable `<timestamp>` tag can be dated, so untagged turns and assistant
-turns are dropped. Every such drop is COUNTED and surfaced in the audit
-sentence (review fix — the old version silently discarded most of the corpus).
-Filenames are hashed to opaque ids before reaching an Event.
+CONSERVATIVE BY CONSTRUCTION: only user text BLOCKS whose text starts with a
+recognizable `<timestamp>` tag can be dated. Every non-dated line AND every
+non-dated block is COUNTED toward `dropped` — nothing is silently discarded
+(the old version hid most of the corpus). Block index is part of the ref, so
+two dated blocks on one line get distinct opaque ids. A malformed line or an
+unreadable file degrades to a counted drop, never a crash. Session identity is
+the path relative to the root, so same-named files in different directories
+stay distinct.
 """
 from __future__ import annotations
 
 import datetime
-import hashlib
-import json
 import re
 from pathlib import Path
 
 from ..model import AuthorClass, CoarseTime, DataType, Event, Quarantine, Surface
 from . import register
-from .claude_code import _features, _hash
+from .claude_code import _features, _hash, _iter_lines
 from .injection import authored_text
 
 MON = {m: i + 1 for i, m in enumerate((
@@ -31,44 +32,41 @@ TAG = re.compile(r"^\s*<timestamp>\w+,\s+(\w+)\s+(\d{1,2}),\s+(\d{4})")
 @register("cursor")
 def ingest(path: str, corpus_id: str = "corpus"):
     root = Path(path)
-    # raw: (date, session_stem, text, real_ref, stripped)
-    raw = []
+    raw = []          # (date, session_key, text, real_ref, stripped)
     dropped = 0
     for f in sorted(root.rglob("*.jsonl")):
-        session = f.stem
-        with f.open(encoding="utf-8-sig", errors="replace") as fh:
-            for i, ln in enumerate(fh):
-                if not ln.strip():
+        rel = f.relative_to(root).as_posix()
+        for i, o in _iter_lines(f):
+            if not isinstance(o, dict) or o.get("role") != "user":
+                dropped += 1                        # non-dict / assistant / system
+                continue
+            msg = o.get("message")
+            if not isinstance(msg, dict):
+                msg = {}
+            blocks = [b for b in msg.get("content") or []
+                      if isinstance(b, dict) and b.get("type") == "text"]
+            if not blocks:
+                dropped += 1
+                continue
+            any_dated = False
+            for bi, blk in enumerate(blocks):
+                txt = blk.get("text") or ""
+                m = TAG.match(txt)
+                if not m or m[1] not in MON:
+                    dropped += 1                    # every non-dated block counted
                     continue
                 try:
-                    o = json.loads(ln)
-                except Exception:
+                    d = datetime.date(int(m[3]), MON[m[1]], int(m[2]))
+                except ValueError:
                     dropped += 1
                     continue
-                if not isinstance(o, dict) or o.get("role") != "user":
-                    dropped += 1                 # assistant / system / non-dict
-                    continue
-                blocks = [b for b in (o.get("message") or {}).get("content") or []
-                          if isinstance(b, dict) and b.get("type") == "text"]
-                if not blocks:
+                text, stripped = authored_text(txt)
+                if not text:
                     dropped += 1
                     continue
-                dated = False
-                for blk in blocks:
-                    txt = blk.get("text") or ""
-                    m = TAG.match(txt)
-                    if not m or m[1] not in MON:
-                        continue
-                    try:
-                        d = datetime.date(int(m[3]), MON[m[1]], int(m[2]))
-                    except ValueError:
-                        continue
-                    text, stripped = authored_text(txt)
-                    if text:
-                        raw.append((d, session, text, f"{f.name}:{i+1}", stripped))
-                        dated = True
-                if not dated:
-                    dropped += 1                 # untagged user turn — counted, not hidden
+                raw.append((d, rel, text, f"{rel}:{i+1}:{bi}", stripped))
+                any_dated = True
+            _ = any_dated
     if not raw:
         return [], Quarantine(), dropped
     base = min(r[0] for r in raw)

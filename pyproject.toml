@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "corpuslens"
 version = "0.1.0"
-description = "Local-first process lens for your own human+agent corpus — reads process, structurally cannot read the person"
+description = "Local-first process lens for your own human+agent corpus — reads process; the wall keeps the absolute time anchor out of the analysis"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Sean Campbell" }]

@@ -33,6 +33,7 @@ def steering_density(events):
         "total_turns": total,
         "mid_task_share_pct": round(100 * mid / total, 1),
         "single_turn_sessions_pct": round(100 * (len(sess) - len(multi)) / len(sess), 1),
+        "single_turn_sessions_pct_denominator": "sessions (not turns) — this rate is per-session",
         "work_session_median_turns": statistics.median(multi) if multi else 0,
         "opener_median_words": statistics.median(openers),
         "followup_median_words": statistics.median(followups) if followups else 0,

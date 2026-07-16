@@ -154,6 +154,77 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(dropped, 2)   # untagged user + assistant, both counted
         sub.cleanup()
 
+    def test_malformed_message_shape_does_not_crash_and_is_counted(self):
+        j = Path(self.tmp.name) / "badmsg.jsonl"
+        _write(j, ['{"type":"user","timestamp":"2026-02-01T10:00:00Z","message":"a string not a dict"}',
+                   '{"type":"user","timestamp":"2026-02-01T10:01:00Z","message":42}',
+                   _cc_line("user", "a real datable operator turn here", "2026-02-01T10:02:00Z")])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "badmsg.jsonl").write_bytes(j.read_bytes())
+        # truthy non-dict message must NOT crash — it degrades to an empty-text drop
+        events, q, dropped = ingest.get("claude-code")(sub.name)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(dropped, 2)
+        sub.cleanup()
+
+    def test_same_name_files_in_different_dirs_stay_distinct_threads(self):
+        root = tempfile.TemporaryDirectory()
+        for sub, ts in (("projA", "2026-02-01T10:00:00Z"), ("projB", "2026-02-09T10:00:00Z")):
+            Path(root.name, sub).mkdir()
+            _write(Path(root.name, sub, "session.jsonl"),
+                   [_cc_line("user", f"work in {sub} on the thing", ts)])
+        events, q, _ = ingest.get("claude-code")(root.name)
+        self.assertEqual(len({e.thread_id for e in events}), 2)   # not merged
+        root.cleanup()
+
+    def test_cursor_two_dated_blocks_get_distinct_ids(self):
+        line = {"role": "user", "message": {"content": [
+            {"type": "text", "text": "<timestamp>Tuesday, May 19, 2026, 12:38 PM (UTC-6)</timestamp>\n<user_query>first block query</user_query>"},
+            {"type": "text", "text": "<timestamp>Tuesday, May 19, 2026, 12:40 PM (UTC-6)</timestamp>\n<user_query>second block query</user_query>"},
+        ]}}
+        sub = tempfile.TemporaryDirectory()
+        _write(Path(sub.name, "c.jsonl"), [json.dumps(line)])
+        events, q, dropped = ingest.get("cursor")(sub.name)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(len({e.event_id for e in events}), 2)    # no collision
+        sub.cleanup()
+
+    def test_naive_timestamp_is_utc_not_host_tz(self):
+        import os
+        j = Path(self.tmp.name) / "naive.jsonl"
+        _write(j, [_cc_line("user", "turn one is a full length prompt", "2026-02-01T10:00:00"),
+                   _cc_line("user", "turn two is a full length prompt", "2026-02-01T10:05:00")])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "naive.jsonl").write_bytes(j.read_bytes())
+        old = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Asia/Kolkata"
+            import time; time.tzset()
+            events, q, _ = ingest.get("claude-code")(sub.name)
+            deltas = [e.time.delta_prev_s for e in events if e.time.delta_prev_s is not None]
+            self.assertIn(300.0, deltas)   # 5 min, independent of host TZ
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            import time; time.tzset()
+        sub.cleanup()
+
+    def test_classifier_prose_false_positives_fixed(self):
+        from corpuslens.ingest.claude_code import AUTHORED, DELIB
+        for s in ["I take exception to that remark", "we waited in line 40 minutes at the DMV",
+                  "a strong sense of self. Then it faded", "I made an exception for him"]:
+            self.assertFalse(CODE_REF.search(s), f"CODE_REF FP: {s}")
+        for s in ["Budget = 500 dollars this month", "weight = 180 lbs today", "  return to sender please"]:
+            self.assertFalse(AUTHORED.search(s), f"AUTHORED FP: {s}")
+        for s in ["my stock options vested today", "thoughts and prayers to the family"]:
+            self.assertFalse(DELIB.search(s), f"DELIB FP: {s}")
+        # real code still caught
+        self.assertTrue(AUTHORED.search("SELECT id FROM users WHERE active = true"))
+        self.assertTrue(AUTHORED.search("public class Foo {"))
+        self.assertTrue(AUTHORED.search("for i in range(10):"))
+
     def test_denominatorless_analyzer_rejected(self):
         with self.assertRaises(ValueError):
             register("bad", claims=("tempo",), denominator=" ")(lambda ev: {})
