@@ -242,6 +242,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(dropped, 1)
         sub.cleanup()
 
+    def test_casual_aside_corpus_reads_low_code_ref(self):
+        # round-4 Sonnet: parenthetical asides must not read as code references
+        j = Path(self.tmp.name) / "casual.jsonl"
+        asides = ["sure(ish) that could work for us tomorrow",
+                  "kind of(ish) but i am not totally certain yet",
+                  "see you(soon) at the usual spot friend",
+                  "make some change(s) to the dinner plan please",
+                  "bring the kids(!) along to the park later"]
+        _write(j, [_cc_line("user", t, f"2026-02-0{i+1}T10:00:00Z") for i, t in enumerate(asides)])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "casual.jsonl").write_bytes(j.read_bytes())
+        events, q, _ = ingest.get("claude-code")(sub.name)
+        from corpuslens.analyze.composition import composition_mix
+        res = composition_mix(events)
+        self.assertEqual(res["code_ref_pct"], 0.0)     # was 100% before the fix
+        self.assertEqual(res["authored_code_pct"], 0.0)
+        sub.cleanup()
+
     def test_pure_prose_corpus_reads_low_authored(self):
         # the flagship honesty case: a zero-code personal corpus must NOT score
         # as more code-authored than the coding reference population

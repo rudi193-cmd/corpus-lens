@@ -40,9 +40,13 @@ ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T")
 # Case-sensitive on the keyword/Error branches so prose "exception"/"error"
 # does not match.
 CODE_REF = re.compile(
-    # a call foo(...) — but NOT the English plural/punctuation paren "change(s)",
-    # "figure(s)", "kids(!)" that over-counted code_ref_pct on personal prose
-    r"\b[A-Za-z_]\w*\((?!(s|es|d|ed|ing|'s|!|\?|:|;)\))[^)]*\)"
+    # Call detection matches the reference study's methodology (the READ regex in
+    # operator_reading_analysis): an EMPTY-parens call foo() or a dotted method
+    # call obj.method( — NOT bare word(word). Bare word(arg) fires on prose asides
+    # ("change(s)", "see you(soon)", "kind of(ish)") and inflated code_ref_pct to
+    # 100% on a code-free corpus; it is also broader than the reference the number
+    # is compared against. Empty/dotted calls do not occur in ordinary prose.
+    r"\b[A-Za-z_]\w*\(\s*\)"                    # empty call: foo()
     r"|\b[A-Za-z_]\w*\.[A-Za-z_]\w*\("          # method call: obj.method(
     r"|`[^`]+`|```"                              # inline / fenced code
     r"|\b\w+\.(py|js|ts|rs|go|rb|java|sql|sh)\b"  # source file
@@ -66,7 +70,7 @@ AUTHORED = re.compile(
     r"|^\s*for\s+\w+\s+in\s+[^\n]*:\s*$"               # for x in ...:
     r"|^\s*(while|if|elif)\b[^\n]*[<>=!(][^\n]*:\s*$" # while/if with an operator/paren, ending ':'
     r"|^\s*(try|except|finally|else)\s*:\s*$"          # bare block keyword line
-    r"|^\s*(public|private|protected|static)\s+[\w<>\[\].]+\s+\w+\s*[({=;]"  # java/c# decl
+    r"|^\s*(public|private|protected|static)(\s+(public|private|protected|static|final|abstract|synchronized))*\s+[\w<>\[\].]+\s+\w+\s*[({=;]"  # java/c# decl (1+ modifiers)
     r"|^\s*(func|fn)\s+\w+\s*\("                        # func name(
     r"|^\s*(const|let|var)\s+\w+\s*[:=]"                # const/let/var x = | x:
     # imports anchored to a code shape: a bare module path (optionally `as x`) to
@@ -131,7 +135,11 @@ def _parse_ts(ts):
 
 def _iter_lines(f: Path):
     """Yield (line_index, parsed_or_None). An unreadable file yields one
-    sentinel so the caller can count it as a drop and move on — never crash."""
+    sentinel so the caller can count it as a drop and move on — never crash.
+
+    Blank / whitespace-only lines are skipped as structural whitespace and are
+    NOT counted toward `dropped` — they are line separators, not input records.
+    Every line that carries content but fails to become an Event IS counted."""
     try:
         with f.open(encoding="utf-8-sig", errors="replace") as fh:
             for i, ln in enumerate(fh):

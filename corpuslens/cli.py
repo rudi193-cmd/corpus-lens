@@ -28,7 +28,7 @@ def run(path: str, adapter: str, out: str | None) -> int:
               file=sys.stderr)
         return 2
 
-    n_files = sum(1 for _ in p.rglob("*.jsonl"))
+    n_files = sum(1 for f in p.rglob("*.jsonl") if f.is_file())
     events, quarantine, dropped = ingest.get(adapter)(path)
     guard = Guard(quarantine, DEFAULT_PROFILE)
     guard.audit.n_events = len(events)
