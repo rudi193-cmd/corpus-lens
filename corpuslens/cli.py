@@ -28,14 +28,18 @@ def run(path: str, adapter: str, out: str | None) -> int:
               file=sys.stderr)
         return 2
 
+    n_files = sum(1 for _ in p.rglob("*.jsonl"))
     events, quarantine, dropped = ingest.get(adapter)(path)
     guard = Guard(quarantine, DEFAULT_PROFILE)
     guard.audit.n_events = len(events)
     guard.audit.n_dropped = dropped
     if not events:
-        print(f"error: no events — {adapter} matched files under {path} but none yielded a "
-              f"datable, non-empty turn (dropped {dropped}). Wrong adapter or wrong directory?",
-              file=sys.stderr)
+        if n_files == 0:
+            print(f"error: no *.jsonl files found under {path}. Wrong directory?", file=sys.stderr)
+        else:
+            print(f"error: {n_files} *.jsonl file(s) under {path} but none yielded a datable, "
+                  f"non-empty turn for adapter '{adapter}' (dropped {dropped}). Wrong adapter?",
+                  file=sys.stderr)
         return 1
 
     results = {}

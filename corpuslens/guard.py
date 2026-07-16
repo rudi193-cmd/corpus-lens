@@ -23,6 +23,13 @@ WHAT IT DOES NOT DO, ALSO STATED HONESTLY:
   * It does not hide weekly *cadence*. `day_offset % 7` preserves the shape of
     a week up to one unknown rotation; that is inherent to relative-day data
     and cannot be walled off while still computing resumption/concurrency.
+  * It does not fully hide *within-day time-of-day*. Cross-midnight deltas are
+    censored (so the clock cannot be pinned at a day boundary), but the deltas
+    within a single day survive for tempo analysis, and their cumulative span
+    loosely BOUNDS the local time-of-day on a day one thread spans for many
+    hours (e.g. a 21-hour span forces the first event before ~03:00 local).
+    This is a weak local-clock bound — never the timezone, never the date —
+    and we disclose it rather than claim an absolute "no clock hour" wall.
   * It is not an adversarial sandbox against the machine's OWNER. This is a
     local tool you run on your own logs to study yourself; a determined owner
     can always read their own quarantined data by editing their own script.
@@ -81,8 +88,10 @@ class AuditRecord:
         r = f"; refused: {', '.join(self.analyzers_refused)}" if self.analyzers_refused else ""
         return (f"This run read {self.n_events} events (dropped {self.n_dropped}, counted not hidden), "
                 f"ran {len(self.analyzers_run)} process analyzers under profile '{self.profile}', "
-                f"and was granted {g}{r}. No absolute calendar date, timezone, clock hour, or "
-                f"filename left the wall; relative day/tempo did (they preserve weekly cadence).")
+                f"and was granted {g}{r}. No absolute calendar date, timezone, or filename left the "
+                f"wall; relative day and within-day tempo did — these preserve weekly cadence, and "
+                f"on a day a single thread spans for many hours they loosely bound the local "
+                f"time-of-day (never the timezone or the date).")
 
 
 class Guard:

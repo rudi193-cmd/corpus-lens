@@ -52,18 +52,25 @@ CODE_REF = re.compile(
     r"|\bfrom\s+[\w.]+\s+import\b"              # from x import y
     r"|\bimport\s+[a-z]\w*\.\w",                # import a.b (dotted module)
 )
-# AUTHORED: pasted code. Fenced, real def/class/decl lines, control flow ending
-# in a colon, imports, a code-shaped assignment (RHS is a bracket/quote/call —
-# NOT a bare number+unit), SQL, or a few language tells. Case-sensitive so
-# prose "If you're ready:" (capital I) and "Select from the menu" don't match.
+# AUTHORED: pasted code. Every branch requires a CODE SHAPE, not a bare keyword
+# — prose openers like "let me know", "static electricity", "var was short for"
+# must not count (they inflated authored_code_pct to 40% on a pure-prose corpus
+# in review). No generic `x = ...` branch: "Budget = 500", "Plan = [buy milk]",
+# "Verdict = (guilty)" are prose; isolated assignments are weak evidence and
+# under-counting beats over-claiming "you write code". Case-sensitive.
 AUTHORED = re.compile(
     r"```"
-    r"|^\s*(def|class|async\s+def)\s+\w+\s*\("
-    r"|^\s*(for|while|if|elif|with|try|except)\b[^\n]*[):]\s*$"
-    r"|^\s*(public|private|protected|static|func|fn|const|let|var)\s+\w"
+    r"|^\s*(def|class|async\s+def)\s+\w+\s*\("        # def foo( / class Bar(
+    r"|^\s*for\s+\w+\s+in\s+[^\n]*:\s*$"               # for x in ...:
+    r"|^\s*(while|if|elif)\b[^\n]*[<>=!(][^\n]*:\s*$" # while/if with an operator/paren, ending ':'
+    r"|^\s*(try|except|finally|else)\s*:\s*$"          # bare block keyword line
+    r"|^\s*(public|private|protected|static)\s+[\w<>\[\].]+\s+\w+\s*[({=;]"  # java/c# decl
+    r"|^\s*(func|fn)\s+\w+\s*\("                        # func name(
+    r"|^\s*(const|let|var)\s+\w+\s*[:=]"                # const/let/var x = | x:
     r"|^\s*(import\s+[\w.]+|from\s+[\w.]+\s+import)\b"
-    r"|^\s*[A-Za-z_]\w*\s*=\s*([\[{('\"]|[A-Za-z_]\w*\()"
-    r"|^\s*[A-Za-z_]\w*\([^)]*\)\s*$"           # a line that is just a call: print(x)
+    r"|^\s*[A-Za-z_]\w*\([^)]*\)\s*$"                   # a line that is just a call: print(x)
+    r"|^\s*#!\s*/|^\s*export\s+\w+="                    # shell: shebang / export VAR=
+    r"|\|\s*(grep|awk|sed|sort|uniq|head|tail|xargs|wc|jq)\b"  # shell pipe chain
     r"|\b(SELECT|INSERT|UPDATE|DELETE)\b[^\n]*\b(FROM|INTO|SET|WHERE|VALUES)\b"
     r"|console\.log\(|println!\(|System\.out\.",
     re.M,
@@ -101,7 +108,10 @@ def _features(text: str, stripped: bool) -> dict:
 def _parse_ts(ts):
     if not (isinstance(ts, str) and ISO.match(ts)):
         return None, None
-    d = datetime.date(int(ts[:4]), int(ts[5:7]), int(ts[8:10]))
+    try:
+        d = datetime.date(int(ts[:4]), int(ts[5:7]), int(ts[8:10]))   # month 13 etc -> drop, not crash
+    except ValueError:
+        return None, None
     epoch = None
     try:
         dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -132,6 +142,8 @@ def _iter_lines(f: Path):
 @register("claude-code")
 def ingest(path: str, corpus_id: str = "corpus"):
     root = Path(path)
+    if root.exists() and not root.is_dir():
+        raise NotADirectoryError(f"corpuslens adapters take a directory of *.jsonl, not a file: {path}")
     raw = []          # (date, epoch|None, session_key, role, text, real_ref)
     dropped = 0
     for f in sorted(root.rglob("*.jsonl")):

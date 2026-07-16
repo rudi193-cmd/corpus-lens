@@ -32,6 +32,8 @@ TAG = re.compile(r"^\s*<timestamp>\w+,\s+(\w+)\s+(\d{1,2}),\s+(\d{4})")
 @register("cursor")
 def ingest(path: str, corpus_id: str = "corpus"):
     root = Path(path)
+    if root.exists() and not root.is_dir():
+        raise NotADirectoryError(f"corpuslens adapters take a directory of *.jsonl, not a file: {path}")
     raw = []          # (date, session_key, text, real_ref, stripped)
     dropped = 0
     for f in sorted(root.rglob("*.jsonl")):
@@ -65,11 +67,12 @@ def ingest(path: str, corpus_id: str = "corpus"):
                     dropped += 1
                     continue
                 raw.append((d, rel, text, f"{rel}:{i+1}:{bi}", stripped))
-                any_dated = True
-            _ = any_dated
     if not raw:
         return [], Quarantine(), dropped
     base = min(r[0] for r in raw)
+    # sort per session by date (day granularity — cursor has no clock time), so
+    # the opener is the chronologically first prompt, matching the claude adapter
+    raw.sort(key=lambda r: (r[1], r[0]))
     events = []
     ref_map: dict = {}
     for d, session, text, real_ref, stripped in raw:

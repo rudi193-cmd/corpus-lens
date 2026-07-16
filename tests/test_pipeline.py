@@ -225,6 +225,43 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(AUTHORED.search("public class Foo {"))
         self.assertTrue(AUTHORED.search("for i in range(10):"))
 
+    def test_out_of_range_date_is_dropped_not_crash(self):
+        j = Path(self.tmp.name) / "baddate.jsonl"
+        _write(j, [_cc_line("user", "corrupt month thirteen timestamp here", "2026-13-01T10:00:00Z"),
+                   _cc_line("user", "a valid datable operator turn here", "2026-02-01T10:00:00Z")])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "baddate.jsonl").write_bytes(j.read_bytes())
+        events, q, dropped = ingest.get("claude-code")(sub.name)   # must not raise
+        self.assertEqual(len(events), 1)
+        self.assertEqual(dropped, 1)
+        sub.cleanup()
+
+    def test_pure_prose_corpus_reads_low_authored(self):
+        # the flagship honesty case: a zero-code personal corpus must NOT score
+        # as more code-authored than the coding reference population
+        j = Path(self.tmp.name) / "personal.jsonl"
+        prose = ["let me know if that works for you tomorrow",
+                 "let it go, we can figure out dinner later",
+                 "static electricity made her hair stand up at the park",
+                 "var was short for variance in the old statistics textbook",
+                 "thoughts and prayers to the family this week",
+                 "my stock options vested today which was a relief",
+                 "if the weather is nice tomorrow, we could go to the park:"]
+        _write(j, [_cc_line("user", t, f"2026-02-0{i+1}T10:00:00Z") for i, t in enumerate(prose)])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "personal.jsonl").write_bytes(j.read_bytes())
+        events, q, _ = ingest.get("claude-code")(sub.name)
+        from corpuslens.analyze.composition import composition_mix
+        res = composition_mix(events)
+        self.assertLess(res["authored_code_pct"], 14.5)   # below the coding-pop reference
+        self.assertEqual(res["authored_code_pct"], 0.0)
+        sub.cleanup()
+
+    def test_adapter_rejects_file_path_at_library_boundary(self):
+        f = Path(self.tmp.name) / "s1.jsonl"
+        with self.assertRaises(NotADirectoryError):
+            ingest.get("claude-code")(str(f))
+
     def test_denominatorless_analyzer_rejected(self):
         with self.assertRaises(ValueError):
             register("bad", claims=("tempo",), denominator=" ")(lambda ev: {})

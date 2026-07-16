@@ -32,8 +32,8 @@ redaction does not scrub the shape of a week. So:
   a grant is an owner-side code change.
 
 **What this does — and does not — guarantee (read this).** The wall keeps the
-*absolute anchor* out of the analysis: a real calendar date, a weekday
-*label*, an hour-of-day, or a timezone cannot be recovered without
+*absolute anchor* out of the analysis: a real calendar **date**, a real
+**weekday label**, and the **timezone** cannot be recovered without
 re-supplying, through the Guard, the anchor you alone hold. What the wall does
 **not** do:
 
@@ -41,6 +41,13 @@ re-supplying, through the Guard, the anchor you alone hold. What the wall does
   of a week (`day_offset % 7` up to one unknown rotation) — that is inherent to
   computing resumption and concurrency at all, and we do not pretend otherwise.
   Mon-vs-weekend rhythm is visible; *which* real weekday is not.
+- It does **not fully hide within-day time-of-day.** Cross-midnight deltas are
+  censored, so the clock can't be pinned at a day boundary — but within-day
+  tempo deltas survive (a tempo signal is the point), and their cumulative
+  span loosely *bounds* the local time-of-day on a day one thread runs for many
+  hours (a 21-hour span puts the first event before ~03:00 local). This is a
+  weak local-clock **bound** — never the timezone, never the date. We disclose
+  it rather than claim an absolute "no clock hour."
 - It is **not an adversarial sandbox against you, the owner.** This is a local
   tool you run on your own logs to study yourself; you can always read your own
   quarantined data by editing your own script. The wall stops *accidental*
