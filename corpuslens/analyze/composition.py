@@ -16,11 +16,11 @@ REFERENCE = {
 
 
 @register("composition_mix", claims=("composition_mix",),
-          denominator="operator prompt turns >=12 chars (de-injected)")
+          denominator="operator prompt turns with >=12 characters (de-injected)")
 def composition_mix(events):
     turns = [e.features for e in events
              if e.author_class is AuthorClass.OPERATOR and e.data_type is DataType.PROMPT
-             and e.features.get("word_count", 0) * 6 >= 12]
+             and e.features.get("char_count", 0) >= 12]
     n = len(turns)
     if not n:
         return {"error": "no operator prompts found"}
@@ -39,7 +39,7 @@ def composition_mix(events):
 
 
 @register("clarification_pull", claims=("clarification_pull",),
-          denominator="machine response turns >=12 chars")
+          denominator="machine response turns (>=12 chars)")
 def clarification_pull(events):
     ordered = {}
     for e in events:
@@ -47,10 +47,18 @@ def clarification_pull(events):
     asst = forks = 0
     for turns in ordered.values():
         for i, e in enumerate(turns):
-            if e.author_class is AuthorClass.MACHINE and e.data_type is DataType.RESPONSE:
-                asst += 1
-                if e.features.get("clarify") and e.features.get("question") \
-                        and i + 1 < len(turns) and turns[i + 1].author_class is AuthorClass.OPERATOR:
+            if not (e.author_class is AuthorClass.MACHINE and e.data_type is DataType.RESPONSE):
+                continue
+            if e.features.get("char_count", 0) < 12:
+                continue
+            asst += 1
+            if e.features.get("clarify") and e.features.get("question"):
+                # a fork = the NEXT operator turn in the thread answers, even if
+                # machine tool-result turns sit between (review fix — strict
+                # adjacency missed forks whenever the assistant used a tool).
+                nxt = next((turns[j] for j in range(i + 1, len(turns))
+                            if turns[j].author_class is AuthorClass.OPERATOR), None)
+                if nxt is not None:
                     forks += 1
     if not asst:
         return {"error": "no machine responses in corpus (prompt-only adapter?)"}

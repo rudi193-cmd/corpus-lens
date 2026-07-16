@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from . import ingest
 from .analyze import all_analyzers
@@ -17,10 +18,26 @@ from .render import markdown
 
 
 def run(path: str, adapter: str, out: str | None) -> int:
+    p = Path(path)
+    if not p.exists():
+        print(f"error: path does not exist: {path}", file=sys.stderr)
+        return 2
+    if not p.is_dir():
+        print(f"error: expected a directory of *.jsonl session files, got a file: {path}\n"
+              f"       point corpuslens at the parent directory, not a single session file.",
+              file=sys.stderr)
+        return 2
+
     events, quarantine, dropped = ingest.get(adapter)(path)
     guard = Guard(quarantine, DEFAULT_PROFILE)
     guard.audit.n_events = len(events)
     guard.audit.n_dropped = dropped
+    if not events:
+        print(f"error: no events — {adapter} matched files under {path} but none yielded a "
+              f"datable, non-empty turn (dropped {dropped}). Wrong adapter or wrong directory?",
+              file=sys.stderr)
+        return 1
+
     results = {}
     for a in all_analyzers():
         if not guard.admit(a):
@@ -29,8 +46,12 @@ def run(path: str, adapter: str, out: str | None) -> int:
         guard.audit.analyzers_run.append(a.name)
     report = markdown(results, guard.audit)
     if out:
-        with open(out, "w") as f:
-            f.write(report)
+        try:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(report)
+        except OSError as e:
+            print(f"error: could not write --out {out}: {e}", file=sys.stderr)
+            return 2
         print(f"wrote {out}")
     else:
         print(report)

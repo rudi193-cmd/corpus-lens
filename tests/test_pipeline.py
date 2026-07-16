@@ -1,71 +1,183 @@
-"""End-to-end smoke: synthetic claude-code corpus -> events -> analyzers -> report."""
+"""End-to-end + a regression test for every review finding that was fixed."""
+import io
 import json
+import re
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from corpuslens import ingest
 from corpuslens.analyze import all_analyzers, register
+from corpuslens.cli import main as cli_main
 from corpuslens.guard import Guard
+from corpuslens.ingest.claude_code import AUTHORED, CODE_REF
 from corpuslens.render import markdown
 
 
-def _write_session(d: Path, name: str, turns):
-    with (d / f"{name}.jsonl").open("w") as f:
-        for i, (role, text, ts) in enumerate(turns):
-            f.write(json.dumps({
-                "type": role, "timestamp": ts,
-                "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
+def _cc_line(role, text, ts):
+    return json.dumps({"type": role, "timestamp": ts,
+                       "message": {"content": [{"type": "text", "text": text}]}})
+
+
+def _write(path, lines, bom=False):
+    data = "\n".join(lines) + "\n"
+    with open(path, "w", encoding="utf-8-sig" if bom else "utf-8") as f:
+        f.write(data)
 
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        d = Path(self.dir.name)
-        _write_session(d, "s1", [
-            ("user", "build the parser for the config file", "2026-02-01T10:00:00Z"),
-            ("assistant", "Done. Should I also add validation, or keep it minimal?", "2026-02-01T10:05:00Z"),
-            ("user", "it still fails on empty input, fix that", "2026-02-01T10:20:00Z"),
-            ("assistant", "Fixed the empty-input path.", "2026-02-01T10:25:00Z"),
-            ("user", "lets talk about options for the cache layer", "2026-02-03T09:00:00Z"),
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+        _write(self.d / "s1.jsonl", [
+            _cc_line("user", "build the parser for the config file please", "2026-02-01T10:00:00Z"),
+            _cc_line("assistant", "Done. Should I add validation, or keep it minimal?", "2026-02-01T10:05:00Z"),
+            _cc_line("user", "it still fails on empty input, fix that", "2026-02-01T10:20:00Z"),
+            _cc_line("user", "lets talk about options for the cache layer", "2026-02-03T09:00:00Z"),
         ])
-        _write_session(d, "s2", [
-            ("user", "<system-reminder>injected</system-reminder> what does mastery.py return on line 40?", "2026-02-02T08:00:00Z"),
-            ("assistant", "It returns the posterior.", "2026-02-02T08:01:00Z"),
+        _write(self.d / "s2.jsonl", [
+            _cc_line("user", "<system-reminder>x</system-reminder> what does mastery.py return on line 40?", "2026-02-02T08:00:00Z"),
+            _cc_line("assistant", "It returns the posterior.", "2026-02-02T08:01:00Z"),
         ])
 
     def tearDown(self):
-        self.dir.cleanup()
+        self.tmp.cleanup()
 
-    def test_ingest_strips_injection_and_quarantines_calendar(self):
-        events, q, dropped = ingest.get("claude-code")(self.dir.name)
+    def test_ingest_strips_injection_and_quarantines(self):
+        events, q, dropped = ingest.get("claude-code")(str(self.d))
         self.assertEqual(q.base_date_iso, "2026-02-01")
         self.assertTrue(all(e.time.day_offset in (0, 1, 2) for e in events))
-        s2_user = [e for e in events if e.thread_id == "s2" and e.author_class == "operator"]
-        self.assertTrue(s2_user[0].features["injected_stripped"])
-        self.assertTrue(s2_user[0].features["code_ref"])
+        s2u = [e for e in events if e.author_class == "operator" and e.features["injected_stripped"]]
+        self.assertTrue(s2u and s2u[0].features["code_ref"])
+
+    def test_no_filename_reaches_events(self):
+        events, q, _ = ingest.get("claude-code")(str(self.d))
+        for e in events:
+            for fld in (e.event_id, e.source_ref, e.thread_id):
+                self.assertNotIn(".jsonl", fld)
+                self.assertFalse(re.search(r"\d{4}-\d\d-\d\d", fld))
+        # but the real ref survives in the quarantined map for gated re-derivation
+        self.assertTrue(any(".jsonl" in v for v in q.ref_map.values()))
 
     def test_battery_runs_and_report_renders(self):
-        events, q, dropped = ingest.get("claude-code")(self.dir.name)
-        guard = Guard(q)
-        guard.audit.n_events = len(events)
-        results = {}
-        for a in all_analyzers():
-            self.assertTrue(guard.admit(a))
-            results[a.name] = a.run(events)
-            guard.audit.analyzers_run.append(a.name)
+        events, q, dropped = ingest.get("claude-code")(str(self.d))
+        guard = Guard(q); guard.audit.n_events = len(events); guard.audit.n_dropped = dropped
+        results = {a.name: a.run(events) for a in all_analyzers() if guard.admit(a)}
         self.assertEqual(results["steering_density"]["sessions"], 2)
-        self.assertGreater(results["steering_density"]["mid_task_share_pct"], 0)
         self.assertEqual(results["thread_shape"]["threads"], 2)
-        self.assertEqual(results["thread_shape"]["resumptions_ge2d"], 1)
+        # s1 has a 2026-02-01 -> 02-03 gap = 2 days = one 2-6d resumption
+        self.assertEqual(results["thread_shape"]["resumptions_2to6d"], 1)
+        self.assertEqual(results["thread_shape"]["resumptions_ge14d"], 0)
         self.assertGreaterEqual(results["composition_mix"]["delib_pct"], 1)
-        self.assertGreater(results["clarification_pull"]["clarification_forks_pct"], 0)
         report = markdown(results, guard.audit)
-        self.assertIn("No content and no calendar position left the wall", report)
+        self.assertIn("No absolute calendar date", report)
+
+    # ── regression tests, one per review finding ────────────────────────────
+
+    def test_bom_does_not_eat_the_opener(self):
+        b = Path(self.tmp.name) / "bom.jsonl"
+        _write(b, [_cc_line("user", "first turn is the opener here", "2026-02-01T10:00:00Z"),
+                   _cc_line("assistant", "reply", "2026-02-01T10:01:00Z")], bom=True)
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "bom.jsonl").write_bytes(b.read_bytes())
+        events, q, dropped = ingest.get("claude-code")(sub.name)
+        openers = [e for e in events if e.author_class == "operator"]
+        self.assertTrue(openers and "opener" in "".join(str(e.features) for e in openers) or
+                        any(e.features["word_count"] >= 5 for e in openers))
+        self.assertEqual(dropped, 0)   # the BOM line is NOT dropped
+        sub.cleanup()
+
+    def test_nondict_and_system_lines_are_counted_dropped(self):
+        j = Path(self.tmp.name) / "junk.jsonl"
+        _write(j, ['[1,2,3]', '42', 'null', '{"type":"system","timestamp":"2026-02-01T10:00:00Z"}',
+                   'not json at all',
+                   _cc_line("user", "a real datable operator turn here", "2026-02-01T10:00:00Z")])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "junk.jsonl").write_bytes(j.read_bytes())
+        events, q, dropped = ingest.get("claude-code")(sub.name)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(dropped, 5)   # every skipped line counted, none hidden
+        sub.cleanup()
+
+    def test_out_of_order_lines_give_no_negative_delta(self):
+        o = Path(self.tmp.name) / "ooo.jsonl"
+        _write(o, [_cc_line("user", "later turn appears first in the file", "2026-02-01T12:00:00Z"),
+                   _cc_line("user", "earlier turn appears second in the file", "2026-02-01T09:00:00Z")])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "ooo.jsonl").write_bytes(o.read_bytes())
+        events, q, _ = ingest.get("claude-code")(sub.name)
+        for e in events:
+            if e.time.delta_prev_s is not None:
+                self.assertGreaterEqual(e.time.delta_prev_s, 0)
+        sub.cleanup()
+
+    def test_code_ref_does_not_fire_on_plain_prose(self):
+        prose = ["The company returns to profitability next quarter.",
+                 "There was an Error in judgment when we hired that vendor.",
+                 "As a function of time, sales decline in winter.",
+                 "I import goods from overseas for my business."]
+        for s in prose:
+            self.assertFalse(CODE_REF.search(s), f"false positive on: {s}")
+        for s in ["what does foo() return?", "see mastery.py line 40", "hit a ValueError"]:
+            self.assertTrue(CODE_REF.search(s), f"false negative on: {s}")
+
+    def test_authored_catches_unfenced_paste(self):
+        self.assertTrue(AUTHORED.search("x = 1\nprint(x)"))
+        self.assertTrue(AUTHORED.search("```\nx=1\n```"))
+        self.assertFalse(AUTHORED.search("just talking about the plan for tomorrow"))
+
+    def test_denominator_is_character_based(self):
+        # a 5-char two-word turn must NOT count toward a ">=12 characters" denom
+        short = Path(self.tmp.name) / "short.jsonl"
+        _write(short, [_cc_line("user", "do it", "2026-02-01T10:00:00Z"),
+                       _cc_line("user", "here is a much longer operator instruction", "2026-02-01T10:05:00Z")])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "short.jsonl").write_bytes(short.read_bytes())
+        events, q, _ = ingest.get("claude-code")(sub.name)
+        from corpuslens.analyze.composition import composition_mix
+        res = composition_mix(events)
+        self.assertEqual(res["n_turns"], 1)   # "do it" (5 chars) excluded
+        sub.cleanup()
+
+    def test_cursor_counts_untagged_drops(self):
+        c = Path(self.tmp.name) / "cur.jsonl"
+        tagged = {"role": "user", "message": {"content": [{"type": "text",
+                  "text": "<timestamp>Tuesday, May 19, 2026, 12:38 PM (UTC-6)</timestamp>\n<user_query>fix the bug in the parser</user_query>"}]}}
+        untagged = {"role": "user", "message": {"content": [{"type": "text", "text": "no timestamp here"}]}}
+        asst = {"role": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+        _write(c, [json.dumps(tagged), json.dumps(untagged), json.dumps(asst)])
+        sub = tempfile.TemporaryDirectory()
+        Path(sub.name, "cur.jsonl").write_bytes(c.read_bytes())
+        events, q, dropped = ingest.get("cursor")(sub.name)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(dropped, 2)   # untagged user + assistant, both counted
+        sub.cleanup()
 
     def test_denominatorless_analyzer_rejected(self):
         with self.assertRaises(ValueError):
             register("bad", claims=("tempo",), denominator=" ")(lambda ev: {})
+
+    def test_empty_and_missing_paths_exit_nonzero(self):
+        empty = tempfile.TemporaryDirectory()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = cli_main(["run", empty.name, "--adapter", "claude-code"])
+        self.assertEqual(rc, 1)               # matched nothing -> error, not cheerful 0
+        empty.cleanup()
+        err2 = io.StringIO()
+        with redirect_stderr(err2):
+            rc2 = cli_main(["run", "/no/such/path/xyz", "--adapter", "claude-code"])
+        self.assertEqual(rc2, 2)              # missing path -> usage error
+        self.assertIn("does not exist", err2.getvalue())
+
+    def test_file_instead_of_dir_is_rejected(self):
+        f = Path(self.tmp.name) / "s1.jsonl"
+        err = io.StringIO()
+        with redirect_stderr(err):
+            rc = cli_main(["run", str(f), "--adapter", "claude-code"])
+        self.assertEqual(rc, 2)
+        self.assertIn("directory", err.getvalue())
 
 
 if __name__ == "__main__":

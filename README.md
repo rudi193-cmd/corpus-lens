@@ -13,27 +13,44 @@ consent object and is out of scope by design.
 The rubric this instruments: [GRADING.md](https://github.com/rudi193-cmd/willow-seed/blob/main/GRADING.md)
 (ten questions to grade your own system).
 
-## The wall (why this is safe to hold)
+## The wall (what it guarantees, stated honestly)
 
 The load-bearing design decision, inherited from the instrument's origin:
-**relative time is process; absolute wall-clock position is person.** A
-custody schedule was once reconstructed from keystroke timing alone — content
+**relative time is process; the absolute anchor is person.** A custody
+schedule was once reconstructed from keystroke timing alone — content
 redaction does not scrub the shape of a week. So:
 
-- Events carry **day offsets and deltas only**. The calendar anchor and
-  timezone are quarantined at ingest; under the default profile there is no
-  path from an analyzer back to a weekday or an hour. Un-assemblable, not
-  refused.
+- Events carry **relative day offsets and deltas only**. The calendar anchor
+  (which real date is day 0), the timezone, and the raw filenames (which embed
+  dates and names) are quarantined at ingest and released only through the
+  Guard with a granted capability + owner token + logged justification, fail-
+  closed on every path.
 - Analyzers declare **claim types** against a process-only allowlist.
   "He is [category]" has no representable claim type.
-- Every gate **fails closed**: unknown capability, missing justification,
-  absent owner token — all read as denial.
-- Every run emits a **plain-language audit sentence** a family could read.
-- There is deliberately **no CLI flag to grant capabilities** — a grant is an
-  owner-side code change, not a switch in a README.
+- Every run emits a **plain-language audit sentence** naming exactly what left
+  the wall, and there is deliberately **no CLI flag to grant capabilities** —
+  a grant is an owner-side code change.
 
-`tests/test_wall.py` red-teams all of this; the custody-shaped analysis is the
-acceptance test — it must be unreachable.
+**What this does — and does not — guarantee (read this).** The wall keeps the
+*absolute anchor* out of the analysis: a real calendar date, a weekday
+*label*, an hour-of-day, or a timezone cannot be recovered without
+re-supplying, through the Guard, the anchor you alone hold. What the wall does
+**not** do:
+
+- It does **not hide weekly cadence.** Relative day offsets preserve the shape
+  of a week (`day_offset % 7` up to one unknown rotation) — that is inherent to
+  computing resumption and concurrency at all, and we do not pretend otherwise.
+  Mon-vs-weekend rhythm is visible; *which* real weekday is not.
+- It is **not an adversarial sandbox against you, the owner.** This is a local
+  tool you run on your own logs to study yourself; you can always read your own
+  quarantined data by editing your own script. The wall stops *accidental*
+  leaks and constrains analyzer *plugins* — the supported path emits process
+  only. Claiming it could stop its own owner would be the overclaim this
+  project is built to forbid.
+
+`tests/test_wall.py` holds the wall to exactly these claims — including a test
+that asserts a plugin *cannot* recover the absolute anchor via the supported
+path, and one that documents that weekly cadence *is* reconstructable.
 
 ## Quickstart
 
@@ -57,7 +74,8 @@ reference table inherits those corrections, not the first drafts.
 ## Status: spine (v0.1)
 
 Built: event model, the wall, two adapters (claude-code, cursor), injection
-filter, four analyzers, markdown renderer, CLI, 13 tests.
+filter, four analyzers, markdown renderer, CLI, test suite (wall + pipeline +
+regression tests for every review finding).
 
 Named and deliberately unbuilt:
 - `distinctive_tokens` and any content-derived token feature — **absent until
@@ -68,7 +86,13 @@ Named and deliberately unbuilt:
 - Bootstrap CIs / band-sensitivity on rates; claude.ai web-export and
   agent-fleet adapters; JSON/prose renderers.
 - The cursor adapter keeps only turns carrying the runtime's injected
-  timestamp tag — conservative, undercounts, reported in the audit line.
+  timestamp tag — conservative, undercounts, and **every dropped turn is
+  counted in the audit line** (not silently discarded).
+
+The classifiers are regex heuristics with known false-positive/negative modes
+(a mixed personal + coding corpus is where they are weakest); the reference
+numbers are one verified N=1, not a population you belong to. Grade direction,
+spot-check before you cite.
 
 Lineage: consolidates the ad-hoc instruments of the willow personal-research
 sessions (2026-07) into the architecture planned there; the inference wall is

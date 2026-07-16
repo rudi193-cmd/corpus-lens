@@ -2,18 +2,36 @@
 
 Sits between ingestion and analysis. Four mechanisms in the spine:
 
-  1. Quarantine custody: the calendar anchor and timezone never reach an
-     analyzer; `Guard.release()` is the only door and it fail-closes.
-  2. Capability profile: the default profile grants NOTHING. Person-shaped
-     analysis is un-assemblable by default, not merely refused.
+  1. Quarantine custody: the calendar anchor, timezone, and the filename->line
+     map are held privately by the Guard; `release()` is the supported door
+     and it fail-closes on every path.
+  2. Capability profile: the default profile grants NOTHING. Absolute calendar
+     position, timezone, and person-shaped claims are all off by default.
   3. Claim gate: an analyzer whose declared claims are not on the process
      allowlist does not register. Unknown claim -> refusal (fail closed).
   4. Audit: every run produces a plain-language record of what ran, what was
      granted, and what was denied — a sentence a family can read.
 
-Surveillance-shaped analysis is meant to be structurally unreachable here,
-not discouraged. If you find a way through the wall, that is a bug of the
-highest class: report it like one.
+WHAT THE WALL GUARANTEES, STATED HONESTLY (corrected after review). The wall
+keeps the ABSOLUTE ANCHOR — which real date is day 0, which timezone, which
+clock hour, and the raw filenames (which embed both) — out of the data an
+analyzer receives. Recovering a real calendar date, weekday label, or hour
+requires re-supplying the anchor through this Guard, with a capability + owner
+token + logged justification.
+
+WHAT IT DOES NOT DO, ALSO STATED HONESTLY:
+  * It does not hide weekly *cadence*. `day_offset % 7` preserves the shape of
+    a week up to one unknown rotation; that is inherent to relative-day data
+    and cannot be walled off while still computing resumption/concurrency.
+  * It is not an adversarial sandbox against the machine's OWNER. This is a
+    local tool you run on your own logs to study yourself; a determined owner
+    can always read their own quarantined data by editing their own script.
+    The wall's job is to stop ACCIDENTAL leaks and to constrain analyzer
+    PLUGINS — the default, supported path emits process only. Claiming it
+    stops the owner would itself be the overclaim this project forbids.
+
+If a *plugin analyzer running the supported path* can recover the absolute
+anchor, that is a bug of the highest class: report it like one.
 """
 from __future__ import annotations
 
@@ -61,22 +79,27 @@ class AuditRecord:
     def sentence(self) -> str:
         g = ", ".join(self.granted) or "nothing beyond process analysis"
         r = f"; refused: {', '.join(self.analyzers_refused)}" if self.analyzers_refused else ""
-        return (f"This run read {self.n_events} events (dropped {self.n_dropped}, reported not hidden), "
+        return (f"This run read {self.n_events} events (dropped {self.n_dropped}, counted not hidden), "
                 f"ran {len(self.analyzers_run)} process analyzers under profile '{self.profile}', "
-                f"and was granted {g}{r}. No content and no calendar position left the wall.")
+                f"and was granted {g}{r}. No absolute calendar date, timezone, clock hour, or "
+                f"filename left the wall; relative day/tempo did (they preserve weekly cadence).")
 
 
 class Guard:
+    """Holds the Quarantine privately (name-mangled) so the supported way to
+    reach an anchored value is `release()`. This makes accidental access loud;
+    it is not, and does not claim to be, unbypassable by the owner."""
+
     def __init__(self, quarantine: Quarantine, profile: Profile = DEFAULT_PROFILE):
-        self._q = quarantine
+        self.__q = quarantine          # name-mangled: not a casual public field
         self.profile = profile
         self.audit = AuditRecord(profile=profile.name)
 
     # ── quarantine custody ───────────────────────────────────────────────
     def release(self, cap: str, justification: str) -> object:
-        """The only door to quarantined values. Fail-closed on every path:
+        """The supported door to quarantined values. Fail-closed on every path:
         unknown capability, ungranted capability, missing justification,
-        or a person-class release without an owner token."""
+        or an anchor release without an owner token."""
         if cap not in KNOWN_CAPABILITIES:
             self.audit.denied.append(cap)
             raise WallError(f"unknown capability {cap!r} — absence of policy is denial")
@@ -91,10 +114,19 @@ class Guard:
             raise WallError(f"capability {cap!r} requires an owner token — a name is not an identity")
         self.audit.granted.append(f"{cap} ({justification.strip()})")
         if cap == "calendar_time":
-            return self._q.base_date_iso
+            return self.__q.base_date_iso
         if cap == "local_tz":
-            return self._q.local_tz
+            return self.__q.local_tz
         return True
+
+    def resolve_ref(self, opaque_ref: str, justification: str) -> str:
+        """Re-derive a real 'filename:line' from an Event's opaque source_ref —
+        gated exactly like calendar_time, because filenames embed dates/names."""
+        val = self.release("calendar_time", f"resolve_ref: {justification}")  # noqa: F841
+        return self.__q.ref_map.get(opaque_ref, "")
+
+    def n_events(self) -> int:
+        return self.audit.n_events
 
     # ── claim gate ───────────────────────────────────────────────────────
     def admit(self, analyzer) -> bool:

@@ -13,12 +13,12 @@ from . import register
 
 
 @register("steering_density", claims=("steering_density",),
-          denominator="operator prompt turns (>=12 chars, de-injected)")
+          denominator="operator prompt turns with >=12 characters (de-injected)")
 def steering_density(events):
     sess = defaultdict(list)
     for e in events:
         if e.author_class is AuthorClass.OPERATOR and e.data_type is DataType.PROMPT \
-                and e.features.get("word_count", 0) >= 2:
+                and e.features.get("char_count", 0) >= 12:
             sess[e.thread_id].append(e)
     if not sess:
         return {"error": "no operator prompts found"}
@@ -47,9 +47,11 @@ def thread_shape(events):
     days = defaultdict(set)
     for e in events:
         days[e.thread_id].add(e.time.day_offset)
-    def resum(ds, gap):
+    def resum(ds, lo, hi=None):
+        """Count gaps between consecutive active days in [lo, hi). Buckets are
+        DISJOINT so they never double-count a single long gap."""
         s = sorted(ds)
-        return sum(1 for a, b in zip(s, s[1:]) if b - a >= gap)
+        return sum(1 for a, b in zip(s, s[1:]) if lo <= (b - a) < (hi or 10 ** 9))
     day_threads = defaultdict(set)
     for t, ds in days.items():
         for d in ds:
@@ -57,9 +59,12 @@ def thread_shape(events):
     conc = [len(v) for v in day_threads.values()]
     return {
         "threads": len(days),
-        "resumptions_ge2d": sum(resum(d, 2) for d in days.values()),
-        "resumptions_ge7d": sum(resum(d, 7) for d in days.values()),
+        "resumptions_2to6d": sum(resum(d, 2, 7) for d in days.values()),
+        "resumptions_7to13d": sum(resum(d, 7, 14) for d in days.values()),
+        "resumptions_ge14d": sum(resum(d, 14) for d in days.values()),
+        "buckets": "disjoint day-gap ranges — sum them for total resumptions >=2d",
         "concurrency_median": statistics.median(conc) if conc else 0,
         "concurrency_peak": max(conc) if conc else 0,
-        "note": "derived from log-field dates only; content dates once inflated this 10x",
+        "note": ("derived from log-field dates only; content dates once inflated this 10x. "
+                 "Day gaps are relative — they preserve weekly cadence but not calendar dates."),
     }

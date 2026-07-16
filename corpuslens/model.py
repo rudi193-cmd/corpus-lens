@@ -62,31 +62,46 @@ PERSON_CLAIM_TYPES = frozenset({
 
 @dataclass(frozen=True)
 class CoarseTime:
-    """Relative position only. day_offset counts from the corpus's first event;
-    there is no path from this object back to a calendar."""
+    """Relative position only. `day_offset` counts from the corpus's first event.
+
+    HONEST SCOPE (corrected after review): this object carries no absolute
+    calendar date, no timezone, and no clock hour — recovering any of those
+    requires the anchor the Guard holds. It does NOT hide weekly *cadence*:
+    `day_offset % 7` preserves the shape of a week up to one unknown rotation,
+    and that is inherent to any relative-day representation. We do not claim
+    otherwise. What the wall protects is the absolute anchor (which real date
+    is day 0, which timezone, which hour) — not the fact that the operator has
+    a weekly rhythm. See guard.py and README for the guarantee as stated."""
     day_offset: int
     delta_prev_s: Optional[float] = None  # fine RELATIVE time is process-safe
 
 
 @dataclass
 class Event:
-    event_id: str
+    event_id: str              # opaque hash — never a filename (filenames leak dates/names)
     corpus_id: str
     adapter_id: str
-    source_ref: str            # file:line — the re-derivation anchor
-    thread_id: str
+    source_ref: str            # opaque hash; the real file:line lives in Quarantine.ref_map
+    thread_id: str             # opaque hash of the session — no filename
     surface: Surface
     author_class: AuthorClass
     data_type: DataType
     time: CoarseTime
     features: dict = field(default_factory=dict)
-    # process features only: word_count, code_fenced, code_ref, delib,
-    # question, clarify, injected_stripped. No content. No distinctive tokens.
+    # process features only: word_count, char_count, code_fenced, code_ref,
+    # delib, question, clarify, injected_stripped. No content. No distinctive
+    # tokens (that feature is where names/identities live — absent by design).
 
 
 @dataclass
 class Quarantine:
     """What the adapter saw but the Event must not carry. Held by the Guard;
-    released only capability-by-capability, with a logged justification."""
+    released only capability-by-capability, with a logged justification.
+
+    `ref_map` maps each Event's opaque source_ref back to its real
+    "filename:line" so re-derivation is still possible — but only through the
+    Guard, because filenames routinely embed dates (`chat-2026-02-01T14.jsonl`)
+    and names, which would smuggle absolute time and identity past the wall."""
     base_date_iso: Optional[str] = None   # calendar anchor for day_offset 0
     local_tz: Optional[str] = None
+    ref_map: dict = field(default_factory=dict)   # opaque_ref -> "file:line"
