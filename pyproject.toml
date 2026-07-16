@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "corpuslens"
+version = "0.1.0"
+description = "Local-first process lens for your own human+agent corpus — reads process, structurally cannot read the person"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Sean Campbell" }]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+corpuslens = "corpuslens.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["corpuslens"]

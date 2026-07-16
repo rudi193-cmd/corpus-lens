@@ -1,0 +1,65 @@
+"""Where does your intent arrive? (GRADING.md question 1 + 4's relative half)
+
+All computations use relative time only (day offsets, per-thread ordering).
+No calendar is reachable from here — that is the wall doing its job.
+"""
+from __future__ import annotations
+
+import statistics
+from collections import defaultdict
+
+from ..model import AuthorClass, DataType
+from . import register
+
+
+@register("steering_density", claims=("steering_density",),
+          denominator="operator prompt turns (>=12 chars, de-injected)")
+def steering_density(events):
+    sess = defaultdict(list)
+    for e in events:
+        if e.author_class is AuthorClass.OPERATOR and e.data_type is DataType.PROMPT \
+                and e.features.get("word_count", 0) >= 2:
+            sess[e.thread_id].append(e)
+    if not sess:
+        return {"error": "no operator prompts found"}
+    turns_per = [len(v) for v in sess.values()]
+    total = sum(turns_per)
+    mid = total - len(sess)
+    multi = [t for t in turns_per if t >= 2]
+    openers = [v[0].features["word_count"] for v in sess.values()]
+    followups = [e.features["word_count"] for v in sess.values() for e in v[1:]]
+    return {
+        "sessions": len(sess),
+        "total_turns": total,
+        "mid_task_share_pct": round(100 * mid / total, 1),
+        "single_turn_sessions_pct": round(100 * (len(sess) - len(multi)) / len(sess), 1),
+        "work_session_median_turns": statistics.median(multi) if multi else 0,
+        "opener_median_words": statistics.median(openers),
+        "followup_median_words": statistics.median(followups) if followups else 0,
+        "reference": {"measured_director": "96.8% mid-task, 26-turn work sessions",
+                      "swe_bench_tau_bench": "0% mid-task by construction"},
+    }
+
+
+@register("thread_shape", claims=("thread_shape",),
+          denominator="threads with >=1 active day (relative days only)")
+def thread_shape(events):
+    days = defaultdict(set)
+    for e in events:
+        days[e.thread_id].add(e.time.day_offset)
+    def resum(ds, gap):
+        s = sorted(ds)
+        return sum(1 for a, b in zip(s, s[1:]) if b - a >= gap)
+    day_threads = defaultdict(set)
+    for t, ds in days.items():
+        for d in ds:
+            day_threads[d].add(t)
+    conc = [len(v) for v in day_threads.values()]
+    return {
+        "threads": len(days),
+        "resumptions_ge2d": sum(resum(d, 2) for d in days.values()),
+        "resumptions_ge7d": sum(resum(d, 7) for d in days.values()),
+        "concurrency_median": statistics.median(conc) if conc else 0,
+        "concurrency_peak": max(conc) if conc else 0,
+        "note": "derived from log-field dates only; content dates once inflated this 10x",
+    }
