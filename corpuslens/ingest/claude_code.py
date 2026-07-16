@@ -40,7 +40,9 @@ ISO = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T")
 # Case-sensitive on the keyword/Error branches so prose "exception"/"error"
 # does not match.
 CODE_REF = re.compile(
-    r"\b[A-Za-z_]\w*\([^)]*\)"                 # a call: foo(...)
+    # a call foo(...) — but NOT the English plural/punctuation paren "change(s)",
+    # "figure(s)", "kids(!)" that over-counted code_ref_pct on personal prose
+    r"\b[A-Za-z_]\w*\((?!(s|es|d|ed|ing|'s|!|\?|:|;)\))[^)]*\)"
     r"|\b[A-Za-z_]\w*\.[A-Za-z_]\w*\("          # method call: obj.method(
     r"|`[^`]+`|```"                              # inline / fenced code
     r"|\b\w+\.(py|js|ts|rs|go|rb|java|sql|sh)\b"  # source file
@@ -67,7 +69,11 @@ AUTHORED = re.compile(
     r"|^\s*(public|private|protected|static)\s+[\w<>\[\].]+\s+\w+\s*[({=;]"  # java/c# decl
     r"|^\s*(func|fn)\s+\w+\s*\("                        # func name(
     r"|^\s*(const|let|var)\s+\w+\s*[:=]"                # const/let/var x = | x:
-    r"|^\s*(import\s+[\w.]+|from\s+[\w.]+\s+import)\b"
+    # imports anchored to a code shape: a bare module path (optionally `as x`) to
+    # end of line, or a full `from x import y` list — so prose "import export
+    # business is booming" / "import duty" do NOT match
+    r"|^\s*import\s+[\w.]+(\s+as\s+\w+)?\s*$"
+    r"|^\s*from\s+[\w.]+\s+import\s+(\*|[\w.]+(\s*,\s*[\w.]+)*)\s*$"
     r"|^\s*[A-Za-z_]\w*\([^)]*\)\s*$"                   # a line that is just a call: print(x)
     r"|^\s*#!\s*/|^\s*export\s+\w+="                    # shell: shebang / export VAR=
     r"|\|\s*(grep|awk|sed|sort|uniq|head|tail|xargs|wc|jq)\b"  # shell pipe chain

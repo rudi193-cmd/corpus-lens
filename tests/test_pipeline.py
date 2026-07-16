@@ -220,6 +220,12 @@ class PipelineTests(unittest.TestCase):
             self.assertFalse(AUTHORED.search(s), f"AUTHORED FP: {s}")
         for s in ["my stock options vested today", "thoughts and prayers to the family"]:
             self.assertFalse(DELIB.search(s), f"DELIB FP: {s}")
+        # round-4 prose false positives (plural-paren, import-prose)
+        for s in ["make some change(s) to it", "bring the kids(!) along", "several meeting(s) this week"]:
+            self.assertFalse(CODE_REF.search(s), f"CODE_REF plural-paren FP: {s}")
+        for s in ["import export business is booming", "import duty is high on that",
+                  "from home import lessons for the kids too"]:
+            self.assertFalse(AUTHORED.search(s), f"AUTHORED import-prose FP: {s}")
         # real code still caught
         self.assertTrue(AUTHORED.search("SELECT id FROM users WHERE active = true"))
         self.assertTrue(AUTHORED.search("public class Foo {"))

@@ -73,6 +73,23 @@ class ClaimGateTests(unittest.TestCase):
                                         denominator="events", run=lambda ev: {})))
 
 
+class AuditSentenceTests(unittest.TestCase):
+    def test_default_profile_sentence_claims_nothing_left(self):
+        g = Guard(_q())
+        g.audit.n_events = 5
+        s = g.audit.sentence()
+        self.assertIn("No absolute calendar date, timezone, or filename left the wall", s)
+
+    def test_granted_profile_sentence_does_not_deny_the_release(self):
+        # the round-4 finding: an owner grant must NOT co-occur with a flat
+        # "nothing left the wall" claim
+        g = Guard(_q(), Profile(capabilities=frozenset({"calendar_time"}), owner_token="t"))
+        g.release("calendar_time", "owner debug")
+        s = g.audit.sentence()
+        self.assertNotIn("No absolute calendar date, timezone, or filename left the wall", s)
+        self.assertIn("released under owner grant", s)
+
+
 class HonestBoundaryTests(unittest.TestCase):
     def test_event_carries_no_absolute_anchor_or_filename(self):
         e = Event(event_id="a1b2", corpus_id="c", adapter_id="claude-code/1",

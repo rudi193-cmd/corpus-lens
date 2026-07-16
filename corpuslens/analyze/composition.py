@@ -61,6 +61,9 @@ def clarification_pull(events):
                 if nxt is not None:
                     forks += 1
     if not asst:
-        return {"error": "no machine responses in corpus (prompt-only adapter?)"}
+        return {"error": "no machine responses in corpus — this analyzer needs a claude-code "
+                         "corpus; the cursor adapter is prompt-only (no assistant turns)"}
     return {"assistant_turns": asst, "clarification_forks_pct": round(100 * forks / asst, 2),
-            "reference": {"measured_cli": 3.4, "measured_cursor": 2.47}}
+            "reference": {"measured_cli": 3.4,
+                          "measured_cursor_note": "2.47 — measured elsewhere; NOT computable here "
+                          "(cursor logs carry no assistant turns), shown for context only"}}

@@ -86,12 +86,21 @@ class AuditRecord:
     def sentence(self) -> str:
         g = ", ".join(self.granted) or "nothing beyond process analysis"
         r = f"; refused: {', '.join(self.analyzers_refused)}" if self.analyzers_refused else ""
-        return (f"This run read {self.n_events} events (dropped {self.n_dropped}, counted not hidden), "
+        base = (f"This run read {self.n_events} events (dropped {self.n_dropped}, counted not hidden), "
                 f"ran {len(self.analyzers_run)} process analyzers under profile '{self.profile}', "
-                f"and was granted {g}{r}. No absolute calendar date, timezone, or filename left the "
-                f"wall; relative day and within-day tempo did — these preserve weekly cadence, and "
-                f"on a day a single thread spans for many hours they loosely bound the local "
-                f"time-of-day (never the timezone or the date).")
+                f"and was granted {g}{r}. ")
+        if self.granted:
+            # a capability was released this run — do NOT claim nothing left the wall
+            tail = ("Because the capability(ies) named above were granted, the corresponding "
+                    "quarantined value(s) — calendar anchor, timezone, and/or filename — WERE "
+                    "released under owner grant: this run is not anchor-free. Relative day and "
+                    "within-day tempo also left the wall.")
+        else:
+            tail = ("No absolute calendar date, timezone, or filename left the wall; relative day "
+                    "and within-day tempo did — these preserve weekly cadence, and on a day a single "
+                    "thread spans for many hours they loosely bound the local time-of-day (never the "
+                    "timezone or the date).")
+        return base + tail
 
 
 class Guard:
