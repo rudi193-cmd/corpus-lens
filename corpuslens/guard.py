@@ -112,6 +112,7 @@ class Guard:
         self.__q = quarantine          # name-mangled: not a casual public field
         self.profile = profile
         self.audit = AuditRecord(profile=profile.name)
+        self._released_caps: set = set()   # caps actually released this run (egress scan)
 
     # ── quarantine custody ───────────────────────────────────────────────
     def release(self, cap: str, justification: str) -> object:
@@ -131,6 +132,7 @@ class Guard:
             self.audit.denied.append(cap)
             raise WallError(f"capability {cap!r} requires an owner token — a name is not an identity")
         self.audit.granted.append(f"{cap} ({justification.strip()})")
+        self._released_caps.add(cap)
         if cap == "calendar_time":
             return self.__q.base_date_iso
         if cap == "local_tz":
@@ -142,6 +144,41 @@ class Guard:
         gated exactly like calendar_time, because filenames embed dates/names."""
         val = self.release("calendar_time", f"resolve_ref: {justification}")  # noqa: F841
         return self.__q.ref_map.get(opaque_ref, "")
+
+    def scan_egress(self, text: str) -> str:
+        """Defense-in-depth backstop at the OUTPUT choke point. The wall keeps
+        the absolute anchor out of Events upstream; this re-reads the rendered
+        report right before it leaves and refuses to emit if a quarantined value
+        that was NOT released this run appears in it verbatim. It cannot make
+        output safe on its own — it turns the accidental leak the upstream wall
+        was supposed to prevent from a silent escape into a hard stop.
+
+        Grant-aware: a value released under an owner grant is allowed to appear
+        (the audit sentence already declares the run 'not anchor-free'), so only
+        quarantined classes whose capability was NOT released are forbidden.
+
+        The raised error never echoes the leaked value — a hard stop without
+        payload, so the scan itself does not become the leak (returns the text
+        unchanged when clean, so it can wrap the emit inline)."""
+        q = self.__q
+        forbidden: list = []
+        if "calendar_time" not in self._released_caps:
+            if q.base_date_iso:
+                forbidden.append(("calendar anchor", str(q.base_date_iso)))
+            # filenames embed dates/names and are gated by calendar_time (resolve_ref)
+            for real_ref in q.ref_map.values():
+                if real_ref:
+                    forbidden.append(("filename", str(real_ref)))
+        if "local_tz" not in self._released_caps and q.local_tz:
+            forbidden.append(("timezone", str(q.local_tz)))
+        for label, literal in forbidden:
+            if literal and literal in text:
+                raise WallError(
+                    f"egress scan: a quarantined {label} appears in the outbound "
+                    "report but its capability was not released this run — refusing "
+                    "to emit. The upstream wall was bypassed; this is a highest-class "
+                    "bug, report it like one.")
+        return text
 
     def n_events(self) -> int:
         return self.audit.n_events
