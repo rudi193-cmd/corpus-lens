@@ -311,6 +311,24 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("directory", err.getvalue())
 
+    def test_leaking_analyzer_is_stopped_at_the_output_door(self):
+        # end-to-end: an analyzer that smuggles the quarantined base_date into
+        # its result would render it into the report. The egress backstop must
+        # refuse to emit — nonzero exit, nothing on stdout.
+        from unittest import mock
+        from corpuslens.analyze import Analyzer
+        # the corpus in setUp quarantines base_date_iso == "2026-02-01"
+        leaky = Analyzer(name="leaky", claims=("tempo",), denominator="events",
+                         run=lambda ev: {"note": "2026-02-01"})
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("corpuslens.cli.all_analyzers", return_value=[leaky]):
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = cli_main(["run", str(self.d), "--adapter", "claude-code"])
+        self.assertEqual(rc, 3)                       # fail-closed exit code
+        self.assertNotIn("2026-02-01", out.getvalue())  # the report never printed
+        self.assertIn("egress scan", err.getvalue())
+        self.assertNotIn("2026-02-01", err.getvalue())  # error carries no payload
+
 
 if __name__ == "__main__":
     unittest.main()

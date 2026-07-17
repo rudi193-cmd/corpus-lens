@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import ingest
 from .analyze import all_analyzers
-from .guard import DEFAULT_PROFILE, Guard
+from .guard import DEFAULT_PROFILE, Guard, WallError
 from .render import markdown
 
 
@@ -49,6 +49,13 @@ def run(path: str, adapter: str, out: str | None) -> int:
         results[a.name] = {"denominator": a.denominator, **a.run(events)}
         guard.audit.analyzers_run.append(a.name)
     report = markdown(results, guard.audit)
+    try:
+        report = guard.scan_egress(report)   # fail-closed backstop at the output door
+    except WallError as e:
+        # A quarantined value reached the rendered report. Do NOT emit it —
+        # refuse loudly. The report is discarded, not printed.
+        print(f"error: {e}", file=sys.stderr)
+        return 3
     if out:
         try:
             with open(out, "w", encoding="utf-8") as f:

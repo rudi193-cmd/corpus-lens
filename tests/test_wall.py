@@ -157,5 +157,51 @@ class HonestBoundaryTests(unittest.TestCase):
             Guard(_q()).release("calendar_time", "which weekday is slot 0?")
 
 
+class EgressScanTests(unittest.TestCase):
+    """The output-door backstop: the wall keeps the anchor out of Events
+    upstream; scan_egress re-checks the rendered report right before it leaves.
+    These are hostile fixtures — a report that DID leak a quarantined value,
+    asserting the emit is refused (fail closed)."""
+
+    def test_clean_process_report_passes_unchanged(self):
+        g = Guard(_q())
+        report = "# corpuslens report\n\nthreads: 2, day_offset max 14, tempo 90.0s\n"
+        self.assertEqual(g.scan_egress(report), report)
+
+    def test_leaked_calendar_anchor_is_refused(self):
+        with self.assertRaises(WallError):
+            Guard(_q()).scan_egress("this run started on 2026-01-05, apparently")
+
+    def test_leaked_filename_is_refused(self):
+        with self.assertRaises(WallError):
+            Guard(_q()).scan_egress("source: chat-2026-02-01T14-30.jsonl:7")
+
+    def test_leaked_timezone_is_refused(self):
+        with self.assertRaises(WallError):
+            Guard(_q()).scan_egress("local tz looks like America/Denver")
+
+    def test_error_never_echoes_the_leaked_value(self):
+        # a hard stop WITHOUT payload — the backstop must not re-leak the value
+        # it caught into the error text (redential's "stack traces without payload")
+        with self.assertRaises(WallError) as cm:
+            Guard(_q()).scan_egress("leak 2026-01-05 here")
+        self.assertNotIn("2026-01-05", str(cm.exception))
+
+    def test_released_value_is_allowed_in_output(self):
+        # under an owner grant the run is 'not anchor-free'; the released value
+        # may legitimately appear in output, so the backstop must NOT refuse it
+        g = Guard(_q(), Profile(capabilities=frozenset({"calendar_time"}), owner_token="t"))
+        g.release("calendar_time", "owner debug")
+        self.assertIn("2026-01-05", g.scan_egress("dates on: 2026-01-05"))
+
+    def test_ungranted_class_still_refused_when_another_is_released(self):
+        # calendar_time released, but local_tz was NOT — a leaked timezone is
+        # still a hard stop; the grant is per-capability, not a blanket unlock
+        g = Guard(_q(), Profile(capabilities=frozenset({"calendar_time"}), owner_token="t"))
+        g.release("calendar_time", "owner debug")
+        with self.assertRaises(WallError):
+            g.scan_egress("tz: America/Denver")
+
+
 if __name__ == "__main__":
     unittest.main()

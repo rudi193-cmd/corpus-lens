@@ -28,6 +28,16 @@ of adversarial review.
 - **CLI** (`corpuslens run … --adapter …`), markdown report, an annotated
   reproducible [example](examples/EXAMPLE.md), and a test suite whose wall tests
   double as the acceptance tests for the centerpiece.
+- **Egress backstop** (`Guard.scan_egress`, wired at the CLI output door): a
+  defense-in-depth re-check of the rendered report right before it leaves. The
+  wall keeps the anchor out of `Event`s upstream; this catches the accidental
+  leak that upstream guarantee is supposed to prevent — if a quarantined value
+  (calendar anchor, timezone, or a real filename) whose capability was not
+  released this run appears verbatim in the report, the emit is refused
+  (fail-closed, exit code 3) and the report is discarded. Grant-aware (a value
+  released under an owner grant is allowed to appear) and payload-free (the
+  error never echoes the value it caught). Hostile fixtures in `test_wall.py`
+  and an end-to-end leaking-analyzer test in `test_pipeline.py`.
 
 ### Deliberately not built (named, not hidden)
 - Any content-derived token feature (`distinctive_tokens`) — absent until a
