@@ -19,6 +19,7 @@ hashed before it reaches the Event, mirroring how filenames are quarantined.
 from __future__ import annotations
 
 import datetime
+import re
 
 from ..model import AuthorClass, CoarseTime, DataType, Event, Quarantine
 from .claude_code import _features, _hash  # reuse the proven, tested helpers
@@ -86,13 +87,35 @@ def require_columns(mapping: dict, table: str, columns) -> None:
 
 
 # ── timestamp parsing (DB-tolerant; naive → UTC for reproducibility) ──────────
+_DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_OFF_HHMM = re.compile(r"([+-]\d{2})(\d{2})$")     # trailing basic offset  +0530
+_OFF_HH = re.compile(r"[+-]\d{2}$")                # trailing hour-only     +00
+
+
+def _normalize_offset(s: str) -> str:
+    """Rewrite a trailing tz offset to the extended `±HH:MM` form. Python 3.10's
+    `datetime.fromisoformat` rejects the hour-only (`+00`) and basic (`+0530`)
+    offsets that a Postgres `timestamptz::text` on a UTC server routinely emits;
+    3.11+ accepts them. Normalizing here makes the SAME corpus parse identically
+    on every interpreter in the CI matrix — otherwise the 3.10 leg silently loses
+    the epoch and censors within-day tempo that 3.11+ keeps."""
+    m = _OFF_HHMM.search(s)
+    if m:
+        return s[:m.start()] + m.group(1) + ":" + m.group(2)
+    if _OFF_HH.search(s):
+        return s + ":00"
+    return s
+
+
 def parse_db_ts(val):
     """(date, epoch|None) from a DB timestamp cell. Accepts epoch numbers, ISO
-    strings ('T' OR space separated), datetime/date objects, and date-only
-    strings. Naive datetimes are read as UTC so the same corpus yields identical
-    deltas on any machine (never the host timezone) — the wall's reproducibility
-    rule, matching the file adapters. Unparseable → (None, None) so the caller
-    counts a drop instead of crashing."""
+    strings ('T' OR space separated, with or without a tz offset), and
+    datetime/date objects. Naive datetimes are read as UTC so the same corpus
+    yields identical deltas on any machine (never the host timezone) — the wall's
+    reproducibility rule, matching the file adapters. A DATE-ONLY value carries no
+    clock, so it returns `(date, None)` — never a synthesized midnight epoch that
+    would fabricate a 0-second tempo delta. Unparseable → (None, None) so the
+    caller counts a drop instead of crashing."""
     if isinstance(val, bool):                      # bool is an int subclass — reject
         return None, None
     if isinstance(val, (int, float)):
@@ -108,9 +131,15 @@ def parse_db_ts(val):
         return val, None
     if not isinstance(val, str):
         return None, None
-    s = val.strip().replace("Z", "+00:00")
+    s = val.strip()
     if not s:
         return None, None
+    if _DATE_ONLY.match(s):                         # pure date — no clock to synthesize
+        try:
+            return datetime.date.fromisoformat(s), None
+        except ValueError:
+            return None, None
+    s = _normalize_offset(s.replace("Z", "+00:00").replace("z", "+00:00"))
     try:
         dt = datetime.datetime.fromisoformat(s)
         d = dt.date()
@@ -119,8 +148,8 @@ def parse_db_ts(val):
         return d, dt.timestamp()
     except ValueError:
         pass
-    try:                                            # date-only fallback
-        return datetime.date.fromisoformat(s[:10]), None
+    try:                                            # last resort: a leading date,
+        return datetime.date.fromisoformat(s[:10]), None   # but never a fake clock
     except ValueError:
         return None, None
 

@@ -4,8 +4,8 @@ quarantined (never on an Event), unusable rows are counted-not-hidden,
 cross-midnight deltas are censored, operator text is injection-stripped, and the
 CLI end-to-end emits an anchor-free audit sentence. Postgres tests use the local
 `psql` client and skip cleanly if no cluster is reachable."""
+import datetime
 import io
-import os
 import re
 import sqlite3
 import subprocess
@@ -74,6 +74,27 @@ class RowHelperTests(unittest.TestCase):
         self.assertEqual(parse_db_ts("garbage"), (None, None))
         self.assertEqual(parse_db_ts(True), (None, None))  # bool rejected
 
+    def test_ts_hour_only_and_basic_offsets_parse_on_all_pythons(self):
+        # Regression for the 3.10 matrix-divergence: `timestamptz::text` on a UTC
+        # server emits an hour-only offset ('+00'), which 3.10's fromisoformat
+        # rejects. These must yield a real epoch on EVERY interpreter, not fall
+        # through to a date-only (epoch None) parse that censors within-day tempo.
+        _, e1 = parse_db_ts("2026-02-01 10:00:00+00")    # hour-only offset
+        _, e2 = parse_db_ts("2026-02-01 10:05:00+00")
+        self.assertIsNotNone(e1)
+        self.assertEqual(e2 - e1, 300.0)
+        d, e = parse_db_ts("2026-02-01T10:00:00+0530")   # basic (no-colon) offset
+        self.assertEqual(d.isoformat(), "2026-02-01")
+        self.assertIsNotNone(e)
+        # naive == the +00 form, same instant
+        _, en = parse_db_ts("2026-02-01 10:00:00")
+        self.assertEqual(en, e1)
+
+    def test_ts_date_only_has_no_synthesized_clock(self):
+        # A pure date carries no clock — it must NOT fabricate a midnight epoch,
+        # which would invent a 0-second tempo delta between two same-day rows.
+        self.assertEqual(parse_db_ts("2026-02-01"), (datetime.date(2026, 2, 1), None))
+
     def test_column_alias_resolution(self):
         m = resolve_columns(["Created_At", "Author", "Body", "Session_Id", "extra"])
         self.assertEqual((m["ts"], m["role"], m["content"], m["session"]),
@@ -110,8 +131,6 @@ class SqliteAdapterTests(unittest.TestCase):
 
     def test_cross_midnight_delta_censored(self):
         events, q, _ = ingest.get("sqlite")(self.db)
-        s1 = sorted((e for e in events if e.time.day_offset in (0, 1)),
-                    key=lambda e: e.time.day_offset)
         # the day-0→day-1 operator turn must have no delta (would pin the hour)
         day1 = [e for e in events if e.time.day_offset == 1]
         self.assertTrue(day1 and all(e.time.delta_prev_s is None for e in day1))
@@ -213,6 +232,62 @@ class PostgresAdapterTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("No absolute calendar date", out.getvalue())
         self.assertNotIn("2026-02-01", out.getvalue())
+
+    def test_real_timestamptz_column_keeps_within_day_tempo(self):
+        # Regression for the matrix-divergence finding: a REAL timestamptz column
+        # (not the text fixture) renders as an hour-only-offset string via the
+        # adapter's ::text cast. Two same-day rows must retain their 5-min delta
+        # on every interpreter — on 3.10 the pre-fix parser dropped the epoch and
+        # censored this delta while 3.11+ kept it.
+        subprocess.run(["psql", self.dbname, "-X", "-q", "-c",
+                        "CREATE TABLE tt (created_at timestamptz, author text, "
+                        "body text, session_id text)"],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["psql", self.dbname, "-X", "-q", "-c",
+                        "INSERT INTO tt VALUES "
+                        "('2026-02-01 10:00:00+00','user','first full-length prompt here','z1'),"
+                        "('2026-02-01 10:05:00+00','user','second full-length prompt here','z1')"],
+                       check=True, capture_output=True, text=True)
+        events, q, _ = ingest.get("postgres")(self.dbname, table="tt")
+        deltas = [e.time.delta_prev_s for e in events if e.time.delta_prev_s is not None]
+        self.assertIn(300.0, deltas)
+
+    def test_ambiguous_preferred_table_across_schemas_errors(self):
+        # F4: a preferred name (e.g. 'turns') in two schemas must not be silently
+        # auto-picked — it must ask the user to qualify, like the --table path.
+        subprocess.run(["psql", self.dbname, "-X", "-q", "-c",
+                        "CREATE SCHEMA other; "
+                        "CREATE TABLE other.turns (created_at text, author text, "
+                        "body text, session_id text)"],
+                       check=True, capture_output=True, text=True)
+        with self.assertRaises(ValueError):
+            ingest.get("postgres")(self.dbname)      # public.turns vs other.turns
+
+    def test_malicious_table_name_cannot_inject(self):
+        # The COPY identifier and the information_schema literals must be escaped,
+        # not string-interpolated. A table whose NAME tries to break out of its
+        # quotes must be read as an ordinary (empty-of-turns) table, never execute
+        # the injected statement. If injection worked, 'canary' would be dropped.
+        subprocess.run(["psql", self.dbname, "-X", "-q", "-c", "CREATE TABLE canary (x int)"],
+                       check=True, capture_output=True, text=True)
+        # Short enough to dodge Postgres's 63-byte identifier truncation, so the
+        # name round-trips and the adapter really runs it through _columns and the
+        # COPY. Unescaped, `")...;DROP...--` would close the FROM identifier and
+        # the COPY paren, then execute DROP.
+        evil = 'a"); DROP TABLE canary; --'
+        dq = evil.replace(chr(34), chr(34) * 2)
+        subprocess.run(["psql", self.dbname, "-X", "-q", "-c",
+                        f'CREATE TABLE "{dq}" (created_at text, author text, body text)'],
+                       check=True, capture_output=True, text=True)
+        # adapter may find no usable turns, but must NOT execute the injection.
+        try:
+            ingest.get("postgres")(self.dbname, table=evil)
+        except ValueError:
+            pass                                     # a clean adapter-level error is fine
+        still = subprocess.run(["psql", self.dbname, "-X", "-tAc",
+                                "SELECT to_regclass('public.canary') IS NOT NULL"],
+                               capture_output=True, text=True)
+        self.assertEqual(still.stdout.strip(), "t")  # canary survived → no injection
 
 
 if __name__ == "__main__":

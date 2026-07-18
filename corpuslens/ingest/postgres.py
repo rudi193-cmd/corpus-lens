@@ -9,10 +9,14 @@ which the stdlib `csv` module parses — embedded newlines and quotes in message
 text are handled by the format, not by fragile line-splitting.
 
 Read-only by construction: the only statements issued are `SELECT`s and a
-`COPY (SELECT …)`; the corpus is never written. Injection-safe: the table and
-column names that reach SQL are not the raw `--table` string — they are matched
-against `information_schema` first and only catalog-confirmed identifiers are
-interpolated. Columns are alias-resolved (see `_rows.py`); the wall applies
+`COPY (SELECT …)`; the corpus is never written. Injection-safe: every identifier
+that reaches SQL (schema, table, column) is escaped by doubling embedded
+double-quotes — the correct escaping for a `"…"` identifier — so a maliciously
+NAMED catalog table/schema/column (e.g. `t") TO STDOUT; DROP TABLE x; --`) cannot
+break out of its quotes; and the `information_schema` lookups compare names as
+escaped SQL string literals, never string-interpolated. (Catalog-matching a
+`--table` argument is a usability check, not the security boundary — the escaping
+is.) Columns are alias-resolved (see `_rows.py`); the wall applies
 exactly as elsewhere — locators are host-free `"<table>:row<n>"`, hashed before
 they reach an Event, and the calendar anchor is quarantined.
 """
@@ -30,6 +34,21 @@ from ._rows import (assemble, classify_role, parse_db_ts, require_columns,
 _TABLE_PREFERENCE = ("turns", "messages", "events", "conversation", "conversations",
                      "chat", "chats", "log", "logs", "records", "sessions")
 _TIMEOUT_S = 300
+
+
+def _ident(name: str) -> str:
+    """Quote a SQL identifier, doubling embedded double-quotes — the only correct
+    escaping for a `"…"` identifier. This is what neutralizes a maliciously-named
+    catalog table/schema/column; catalog-matching does not escape, it only
+    validates existence."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _lit(s: str) -> str:
+    """A safe SQL string literal (standard_conforming_strings, the default):
+    double embedded single-quotes. Used for the `information_schema` name
+    comparisons so a name reaching SQL is a literal, never string-interpolated."""
+    return "'" + s.replace("'", "''") + "'"
 
 
 def _psql(dsn: str, sql: str, copy: bool = False) -> str:
@@ -79,13 +98,15 @@ def _resolve_table(dsn: str, table: str | None):
             raise ValueError(f"{table!r} is ambiguous across schemas "
                              f"{[s for s, _ in hits]}; qualify as schema.table")
         return hits[0]
-    names = [t for _, t in pairs]
     if len(pairs) == 1:
         return pairs[0]
     for pref in _TABLE_PREFERENCE:
-        for s, t in pairs:
-            if t.lower() == pref:
-                return (s, t)
+        hits = [(s, t) for s, t in pairs if t.lower() == pref]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:                          # same preferred name in N schemas
+            raise ValueError(f"table {pref!r} exists in multiple schemas "
+                             f"{[s for s, _ in hits]}; qualify as schema.table")
     raise ValueError(f"{len(pairs)} base tables and no obvious corpus table — "
                      f"pass --table. Candidates: {[f'{s}.{t}' for s, t in pairs]}")
 
@@ -93,7 +114,7 @@ def _resolve_table(dsn: str, table: str | None):
 def _columns(dsn: str, schema: str, table: str):
     out = _psql(dsn,
                 "SELECT column_name FROM information_schema.columns "
-                f"WHERE table_schema=$${schema}$$ AND table_name=$${table}$$ "
+                f"WHERE table_schema = {_lit(schema)} AND table_name = {_lit(table)} "
                 "ORDER BY ordinal_position")
     return [c for c in out.splitlines() if c]
 
@@ -107,9 +128,10 @@ def ingest(dsn: str, corpus_id: str = "corpus", table: str | None = None):
     m = resolve_columns(cols)
     require_columns(m, f"{schema}.{tbl}", cols)
 
-    sess_expr = f'"{m["session"]}"::text' if m["session"] else "''"
-    select = (f'SELECT "{m["ts"]}"::text, "{m["role"]}"::text, '
-              f'"{m["content"]}"::text, {sess_expr} FROM "{schema}"."{tbl}"')
+    sess_expr = f'{_ident(m["session"])}::text' if m["session"] else "''"
+    select = (f'SELECT {_ident(m["ts"])}::text, {_ident(m["role"])}::text, '
+              f'{_ident(m["content"])}::text, {sess_expr} '
+              f'FROM {_ident(schema)}.{_ident(tbl)}')
     stream = _psql(dsn, f"COPY ({select}) TO STDOUT WITH (FORMAT csv)", copy=True)
 
     raw = []
