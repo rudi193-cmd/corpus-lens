@@ -24,6 +24,9 @@ class Surface(str, Enum):
     WEB = "web"
     IDE = "ide"
     FLEET = "fleet"
+    DB = "db"        # sourced from a SQLite/Postgres corpus; the original
+                     # interaction surface is not preserved by the store, so we
+                     # label it honestly as "database" rather than guess one.
 
 
 class AuthorClass(str, Enum):

@@ -27,12 +27,19 @@ forms this takes:
 ## The wall discipline (for new adapters and analyzers)
 
 - **A new adapter** must never put an absolute calendar date, timezone, or raw
-  filename on an `Event`. Dates become relative `day_offset`s from the corpus
-  start; the calendar anchor and the real `filename:line` go into the
-  `Quarantine` (reachable only through the `Guard`); session/thread ids are
-  opaque hashes of the path relative to the root. Count every skipped line
-  toward `dropped` — nothing silently discarded — and never let one malformed
-  line or unreadable file crash the run.
+  source locator on an `Event`. Dates become relative `day_offset`s from the
+  corpus start; the calendar anchor and the real locator (a `filename:line`, or
+  a `table:row`) go into the `Quarantine` (reachable only through the `Guard`);
+  session/thread ids are opaque hashes. Count every skipped record toward
+  `dropped` — nothing silently discarded — and never let one malformed record or
+  unreadable source crash the run. A DB-sourced adapter has the same duty as a
+  file one: a connection string or db path can embed a username or home dir just
+  as a filename embeds dates, so it must never reach an `Event` unhashed — route
+  every row through `ingest/_rows.py::assemble`, which is the file adapters'
+  proven wall logic factored out so a database backend cannot re-derive (and
+  quietly weaken) it. New adapters declare their source kind via
+  `register(name, source="file"|"dsn"|"dir")` so the CLI validates the argument
+  correctly instead of assuming a directory.
 - **A new analyzer** must declare a `claim` type on the process-only allowlist
   in `model.py` (a person-shaped claim like `life_partition` stays behind the
   capability gate and out of the default registry) and a **named denominator**

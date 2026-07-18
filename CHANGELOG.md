@@ -10,6 +10,25 @@ First cut: the wall, two adapters, four analyzers, hardened across four rounds
 of adversarial review.
 
 ### Added
+- **Database adapters** (`ingest/sqlite.py`, `ingest/postgres.py`): read a
+  corpus from a **SQLite `.db` file** or a **Postgres connection string** instead
+  of a directory of session files. Both resolve the turns table's timestamp /
+  role / content / session columns by alias (case-insensitive), auto-detect the
+  table when one obvious candidate exists (else `--table`), and honor the wall
+  identically to the file adapters — the row→`Event` logic is factored into
+  `ingest/_rows.py::assemble` so a DB backend cannot re-derive and weaken it.
+  Relative day offsets only, cross-midnight deltas censored, calendar anchor
+  quarantined, `table:row` locators hashed (a db path / DSN never reaches an
+  `Event`), and every unusable row dropped-and-counted. SQLite opens read-only;
+  Postgres issues only `SELECT` / `COPY (SELECT …)`. **Still zero Python
+  dependencies**: SQLite via stdlib `sqlite3`, Postgres by shelling to the
+  `psql` client binary (its one system requirement) rather than importing a
+  driver. The CLI now takes a source-kind per adapter (`dir` / `file` / `dsn`,
+  via `register(..., source=)`) so a file or DSN is not rejected as "not a
+  directory", plus a `--table` flag and a new honest `Surface.DB`. Covered by
+  `tests/test_db_adapters.py` (wall parity, drop-counting, cross-midnight
+  censoring, alias resolution, CSV-embedded-newline handling, CLI end-to-end;
+  the Postgres tests run against a live cluster and skip cleanly without one).
 - **The inference wall** (`guard.py`, `model.py`): `Event`s carry relative time
   only (day offsets + within-day deltas, cross-midnight deltas censored); the
   calendar anchor, timezone, and real filenames are quarantined and released

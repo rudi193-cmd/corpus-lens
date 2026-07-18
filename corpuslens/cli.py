@@ -17,29 +17,50 @@ from .guard import DEFAULT_PROFILE, Guard, WallError
 from .render import markdown
 
 
-def run(path: str, adapter: str, out: str | None) -> int:
+def run(path: str, adapter: str, out: str | None, table: str | None = None) -> int:
+    src = ingest.source_of(adapter)
     p = Path(path)
-    if not p.exists():
-        print(f"error: path does not exist: {path}", file=sys.stderr)
-        return 2
-    if not p.is_dir():
-        print(f"error: expected a directory of *.jsonl session files, got a file: {path}\n"
-              f"       point corpuslens at the parent directory, not a single session file.",
-              file=sys.stderr)
-        return 2
+    n_files = 0
+    if src == "dir":
+        if not p.exists():
+            print(f"error: path does not exist: {path}", file=sys.stderr)
+            return 2
+        if not p.is_dir():
+            print(f"error: expected a directory of *.jsonl session files, got a file: {path}\n"
+                  f"       point corpuslens at the parent directory, not a single session file.",
+                  file=sys.stderr)
+            return 2
+        n_files = sum(1 for f in p.rglob("*.jsonl") if f.is_file())
+    elif src == "file":
+        if not p.exists():
+            print(f"error: path does not exist: {path}", file=sys.stderr)
+            return 2
+        if p.is_dir():
+            print(f"error: adapter '{adapter}' expects a single file, got a directory: {path}",
+                  file=sys.stderr)
+            return 2
+    # src == "dsn": no filesystem check — the adapter validates the connection.
 
-    n_files = sum(1 for f in p.rglob("*.jsonl") if f.is_file())
-    events, quarantine, dropped = ingest.get(adapter)(path)
+    kw = {"table": table} if (table is not None and src in ("file", "dsn")) else {}
+    try:
+        events, quarantine, dropped = ingest.get(adapter)(path, **kw)
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError, ValueError,
+            RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     guard = Guard(quarantine, DEFAULT_PROFILE)
     guard.audit.n_events = len(events)
     guard.audit.n_dropped = dropped
     if not events:
-        if n_files == 0:
+        if src == "dir" and n_files == 0:
             print(f"error: no *.jsonl files found under {path}. Wrong directory?", file=sys.stderr)
-        else:
+        elif src == "dir":
             print(f"error: {n_files} *.jsonl file(s) under {path} but none yielded a datable, "
                   f"non-empty turn for adapter '{adapter}' (dropped {dropped}). Wrong adapter?",
                   file=sys.stderr)
+        else:
+            print(f"error: adapter '{adapter}' yielded no datable, non-empty turn from {path} "
+                  f"(dropped {dropped}). Wrong table/columns, or an empty corpus?", file=sys.stderr)
         return 1
 
     results = {}
@@ -72,13 +93,18 @@ def run(path: str, adapter: str, out: str | None) -> int:
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog="corpuslens")
     sub = p.add_subparsers(dest="cmd", required=True)
-    r = sub.add_parser("run", help="run the process battery on a corpus directory")
-    r.add_argument("path")
+    r = sub.add_parser("run", help="run the process battery on a corpus "
+                                    "(a directory, a SQLite .db, or a Postgres DSN)")
+    r.add_argument("path", help="directory of *.jsonl, a SQLite .db file, or a "
+                                "Postgres connection string, per --adapter")
     r.add_argument("--adapter", required=True, choices=ingest.available())
     r.add_argument("--out", default=None)
+    r.add_argument("--table", default=None,
+                   help="db adapters only: the turns table (schema.table ok); "
+                        "auto-detected when the db has one obvious candidate")
     args = p.parse_args(argv)
     if args.cmd == "run":
-        return run(args.path, args.adapter, args.out)
+        return run(args.path, args.adapter, args.out, args.table)
     return 2
 
 

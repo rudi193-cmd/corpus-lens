@@ -77,6 +77,8 @@ installing, straight from a clone, via `python3 -m corpuslens`.
 ```bash
 corpuslens run ~/.claude/projects --adapter claude-code --out report.md
 corpuslens run ./my-cursor-sessions --adapter cursor
+corpuslens run ./corpus.db --adapter sqlite            # a SQLite corpus (a file)
+corpuslens run "dbname=mycorpus" --adapter postgres    # a Postgres corpus (a DSN)
 # equivalently, from a clone without installing:
 python3 -m corpuslens run ~/.claude/projects --adapter claude-code
 ```
@@ -85,7 +87,40 @@ Point `--adapter claude-code` at a directory of Claude Code session `.jsonl`
 files, or `--adapter cursor` at a directory of Cursor session `.jsonl` files.
 The report prints to stdout (or `--out FILE`), and always opens with a
 plain-language audit line naming exactly what left the wall and how many input
-lines were dropped.
+records were dropped.
+
+### Database corpora (SQLite and Postgres)
+
+If your turns live in a database rather than session files, point the `sqlite`
+adapter at a `.db` **file** or the `postgres` adapter at a **connection string**
+(a libpq URL, a `key=value` conninfo, or a bare dbname):
+
+```bash
+corpuslens run ./chat.db --adapter sqlite
+corpuslens run ./chat.db --adapter sqlite --table messages   # if >1 table
+corpuslens run "postgresql://localhost/mycorpus" --adapter postgres
+```
+
+Both read a **turns table** and resolve the four columns they need — timestamp,
+role, content, and (optionally) a session/thread id — by alias, case-
+insensitively, so a conventional schema needs no configuration (`ts`,
+`timestamp`, `created_at`, …; `role`, `author`, `sender`, …; `content`, `text`,
+`message`, `body`, …; `session_id`, `thread_id`, `conversation_id`, …). A
+database with more than one table needs `--table` unless one obvious candidate
+exists. A role the mapping doesn't recognize, an unparseable timestamp, or an
+empty turn is **dropped and counted**, never guessed at.
+
+The wall applies exactly as for the file adapters: relative day offsets only,
+cross-midnight tempo deltas censored, the calendar anchor quarantined, and the
+row locator (`table:row`) hashed before it reaches an event — a db path or DSN,
+which can embed a username or home dir, never lands on an event. The SQLite
+connection is opened **read-only**; the Postgres adapter issues only `SELECT` /
+`COPY (SELECT …)`, so pointing the lens at a live store cannot mutate it.
+
+**Zero Python dependencies, still.** SQLite uses the stdlib `sqlite3`. The
+Postgres adapter shells out to the **`psql` client binary** (its one system
+requirement) rather than importing a driver, so `pip install corpuslens` stays
+dependency-free — install `psql` (e.g. `postgresql-client`) to use it.
 
 The battery (v0): `steering_density`, `thread_shape`, `composition_mix`,
 `clarification_pull` — each with a named denominator, dropped-event counts
@@ -120,9 +155,9 @@ reference table inherits those corrections, not the first drafts.
 
 ## Status: spine (v0.1)
 
-Built: event model, the wall, two adapters (claude-code, cursor), injection
-filter, four analyzers, markdown renderer, CLI, test suite (wall + pipeline +
-regression tests for every review finding).
+Built: event model, the wall, four adapters (claude-code, cursor, sqlite,
+postgres), injection filter, four analyzers, markdown renderer, CLI, test suite
+(wall + pipeline + db-adapter + regression tests for every review finding).
 
 Named and deliberately unbuilt:
 - `distinctive_tokens` and any content-derived token feature — **absent until
